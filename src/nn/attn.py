@@ -150,8 +150,7 @@ class VQAttention(nn.Module):
         recent_z = torch.cat((xlcache["z_k"], present_z), axis=-1)
         recent_k_hat = torch.cat((xlcache["k_hat"], present_k_hat), axis=-2)
         recent_v = torch.cat((xlcache["v"], present_v), axis=-2)
-        recent_doc_ids = torch.cat((xlcache["doc_ids"], present_doc_ids), axis=-1)
-
+    
         wv = self.attn(present_q,
                     present_k=recent_k_hat,
                     recent_v=recent_v,
@@ -163,8 +162,80 @@ class VQAttention(nn.Module):
         recent_z=recent_z,
         recent_k_hat=recent_k_hat,
         recent_v=recent_v,
-        recent_doc_ids=recent_doc_ids,
+        recent_doc_ids=None,
         l_commit=vq_output_dict_k["l_commit"],
         l_codebook=vq_output_dict_k["l_codebook"],
     )
         return out
+    
+    def attn(self, present_q: torch.Tensor, recent_k_hat: torch.Tensor,
+        recent_v: torch.Tensor, aggcache: dict, position_offset: int) -> dict:
+        """
+        Method responsible for computing the attention mechanism in the
+        transformer model
+
+        Args:
+            present_q (torch.Tensor): Q matrix
+            present_k (torch.Tensor): K matrix
+            present_v (torch.Tensor): V matrix
+            present_doc_ids (torch.Tensor): ids for each word sequence
+            state (dict): dictionary containing the components for each state
+            vq_spec (VQSpec): Specs for VQAttention Module
+
+        Returns:
+            dict: Dictionary containing the attention output, recent z,
+                recent k_hat, recent v, and recent doc_ids.
+            dict: dictionary containing the attention output, commitment and codebook losses
+        """
+
+        # compute xl bias helpers
+        xl_r, xl_u, xl_v = self.get_xl_helpers()
+
+        # compute aggcache scores
+        c = self.quantizer_k.get_codebook()
+        cache_scores = torch.einsum("bhlk,hsb->hbls", present_q + xl_u, c)
+        cache_biases = self.agg_biases(aggcache["lower_k"])
+        cache_biases = cache_biases.unsqueeze(-2)
+
+        cache_scores = cache_scores + cache_biases
+        # compute recent scores (present and xlcache)
+        recent_scores_ac = torch.einsum("bhlk,bhw->bhlw", present_q + xl_u, recent_k_hat)
+        recent_scores_bd = torch.einsum("bhlk,hw->bhlw", present_q + xl_v, xl_r)
+        recent_scores_bd = self.rel_shift(recent_scores_bd)
+
+        # recent scores
+        recent_scores = self.apply_mask_recent_scores(recent_scores_ac,
+                                                    recent_scores_bd,
+                                                    position_offset)
+
+        wv = self.compute_wv(cache_scores, recent_scores, aggcache, recent_v, bsz=present_q.shape[0])
+        return wv
+
+
+    def _compute_wv(self, cache_scores: torch.Tensor, recent_scores: torch.Tensor,
+                    aggcache: dict, recent_v: int, bsz: int):
+        cache_max_scores = torch.max(cache_scores, axis=-1)[0]
+        recent_max_scores = torch.max(recent_scores, axis=-1)[0]
+        max_scores = torch.maxmimum(cache_max_scores, recent_max_scores).detach(
+        )
+
+        cache_scores = cache_scores - max_scores
+        recent_scores = recent_scores - max_scores.unsqueeze(-1)
+        cache_a = torch.exp(cache_scores)
+        recent_a = torch.exp(recent_scores)
+
+        d = torch.sum(recent_a, axis=-1)
+        if self.agg_cache:
+            d = d + torch.sum(cache_a, axis=-1)
+        wv = torch.einsum("bhlw,bhw->bhlv", recent_a / d.unsqueeze(-1), recent_v)
+        if self.agg_cache:
+            wv = wv + torch.einsum(
+                "bhlv,bhsv->bhlv", cache_a / d.unsqueeze(-1),
+                aggcache["upper_div_lower_k"]
+            )
+
+        wv = torch.permute(wv, (0, 2, 1, 3))
+        wv = torch.reshape(wv, (bsz, self.block_len, self.n_head * self.d_v))
+        return wv
+    
+
