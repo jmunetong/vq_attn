@@ -15,8 +15,8 @@ from transformer_vq.nn.grad import st
 from transformer_vq.nn.norm import LayerNorm
 from transformer_vq.nn.pe import get_sinusoid_embs
 from transformer_vq.nn.types import TransformerConfig
+from index import IndexSearcher # TODO: Fix this import 
 
-import torch
 
 def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask=None):
     """
@@ -64,36 +64,148 @@ def get_ema_targets(vecs: torch.Tensor, short_codes: torch.Tensor,
 
     return c_sum_tgt, c_count_tgt
 
+def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
+                   training=True, flaiss_searcher: IndexSearcher=None): # TODO: CREATE INDEX SEARCHER
+    """
+    Function to get shortcodes for the given vectors and codebook.
+    In addition, it also computes the commitment loss.
+    
+    Args:
+        vecs: torch.Tensor, shape [B, H, S, D]
+        codebook: torch.Tensor, shape [H, L, D]
+        training: bool, whether the model is in training mode. This check whether
+                  we should compute arg-min
+                  of l-2 distances or then we could compute with FLAISS
+
+    Returns:
+        z: torch.Tensor, shape [B, H, S]
+        errs2: torch.Tensor, shape [B, H, S] (Commitment loss)
+    """
+    assert not codebook.requires_grad, "Codebook should not require gradients. \
+    This is to compute commitment loss"
+
+    if training:
+        diffS2 = (
+            torch.unsqueeze(torch.sum(torch.square(vecs), axis=-1), -1)
+            - 2.0 * torch.einsum("tbhlk,hsd->tbhls", vecs, codebook)
+            + torch.unsqueeze(torch.unsqueeze(torch.sum(torch.square(codebook), axis=-1), 0), 0)
+        )  # B, H, L, S
+        assert diffS2.shape == (vecs.shape[:-1] + codebook.shape[1:])
+        errs2, z = torch.min(diffS2, axis=-1)
+    else:
+        if flaiss_searcher is None:
+            raise ValueError("FLAISS searcher is required for inference")
+        else:
+            z, errs2 = flaiss_searcher.get_closest(vecs, k=1)
+        errs2 = nn.ReLU()(errs2)  # this is a no-op if using infinite precision
+
+    return z, errs2
+
+class LearnableVQ(nn.Module):
+    n_head: int
+    n_code: int
+    d_model: int
+    loss_mask: torch.Tensor
+    c_gamma: float
+    param_dtype: torch.dtype
+    device: torch.device
+    index_name: str
+    n_probe: int
+    n_list: int
+    n_bits: int
+    M: int
+    ef_search: int
+    ef_construction: int
+
+    def __init__(self, config: dict):
+        self.param_fields = [
+            'n_head',
+            'n_code',
+            'd_model',
+            'c_gamma',
+            'param_dtype',
+            'device',
+            'index_name',
+            'n_probe',
+            'n_list',
+            'n_bits',
+            'M',
+            'ef_search',
+            'ef_construction'
+        ]
+        super(LearnableVQ, self).__init__()
+        self.config = config
+        self.apply_config()
+        self.d_type = self.param_dtype
+        self.n_head = int(self.n_head)
+        self.n_code = int(self.n_code)
+        self.d_model = int(self.d_model)
+        self.w = nn.Parameter(torch.empty((self.n_head, self.n_code, self.d_model)).to(device=self.device, dtype=self.d_type))
+
+    def apply_config(self):
+        for k, v in self.config.items():
+            if k in list(self.param_fields):
+                setattr(self, k, v)
+
+    def _build_faiss_config(self):
+        return dict(index_name=self.index_name,
+                    n_probe=self.n_probe,
+                    n_list=self.n_list,
+                    n_bits=self.n_bits,
+                    M=self.M,
+                    ef_search=self.ef_search,
+                    ef_construction=self.ef_construction)
+
+    def update_index(self, codebook: torch.Tensor=None):
+        codebook = self.w if codebook is None else codebook
+        self.index_searcher.mount_codebook(codebook, faiss_configs=
+                                        self._build_faiss_config())
+
+    def forward(self, vecs: torch.Tensor, loss_mask=torch.Tensor([1]), return_vecs_hat: bool=True) -> torch.Tensor:
+        assert vecs.shape[-1] == self.d_model
+        assert vecs.shape[-3] == self.n_head
+        codebook = self.get_codebook(epsilon=0.01)
+        if not self.training and not self.index_searcher.is_codebook_ready():
+            self.update_index()
+        z, errs2 = get_shortcodes(vecs, codebook,
+                                training=self.training,
+                                flaiss_searcher=self.index_searcher if not self.training else None)
+        if return_vecs_hat:
+            cz = self.get_codevectors(z, codebook)
+            vecs_hat = sg(cz) + st(vecs)
+        else:
+            vecs_hat = None
+        
+        if self.training:
+            loss_mask = loss_mask.unsqueeze(1)
+            l_commit = torch.mean(torch.sum(loss_mask.unsqueeze(1) * errs2, dim=1)) ## TODO: CHECK THIS LOSSS
+            l_codebook = codebook_loss(vecs, z, self.w, self.c_count, self.c_gamma, self, loss_mask)
+        else:
+            l_commit = torch.tensor(0)
+            l_codebook = torch.tensor(0)
+        
+        out = dict(quantized_vecs_hat=vecs_hat, shortcodes=z, l_commit=l_commit, l_codebook=l_codebook)
+        return out
+
+    @staticmethod
+    def get_codevectors(shortcodes: torch.Tensor, codebooks: torch.Tensor):
+        shortcodes = shortcodes.unsqueeze(-1).long()
+        codebooks = codebooks.unsqueeze(0)
+        n = shortcodes.ndim - codebooks.ndim
+        codebooks = codebooks.view(*[1 for _ in range(n)], *codebooks.shape)
+        cz = torch.take_along_dim(codebooks, indices=shortcodes, dim=-2)
+        assert cz.shape == (*shortcodes.shape[:-1], codebooks.shape[-1])
+        return cz
 
 
-def get_shortcodes(vecs, codebook):
-    B, H, L, K = vecs.shape
-    S = codebook.shape[1]
-    chex.assert_shape(vecs, (B, H, L, K))
-    chex.assert_shape(codebook, (H, S, K))
-    diffs2 = (
-        torch.sum(vecs**2, dim=-1, keepdim=True)
-        - 2.0 * einsum("bhlk,hsk->bhls", vecs, codebook)
-        + torch.sum(codebook**2, dim=-1).unsqueeze(0).unsqueeze(2)
-    )  # B, H, L, S
-    z = torch.argmin(diffs2, dim=-1)
-    chex.assert_shape(z, (B, H, L))
-    errs2 = torch.min(diffs2, dim=-1).values
-    errs2 = F.relu(errs2)  # this is a no-op if using infinite precision
-    chex.assert_shape(errs2, (B, H, L))
-    return z.int(), errs2
 
 
-def get_codewords(shortcodes, codebook):
-    B, H, L = shortcodes.shape
-    S, d = codebook.shape[1], codebook.shape[2]
-    shortcodes = shortcodes.unsqueeze(-1)
-    codebook = codebook.unsqueeze(0)
-    chex.assert_shape(shortcodes, (B, H, L, 1))
-    chex.assert_shape(codebook, (1, H, S, d))
-    cz = torch.gather(codebook, 2, shortcodes.expand(-1, -1, -1, d))
-    return cz
 
+
+
+
+
+##### LINGLEEEEEEEE ####################
 
 class LearnableVQ(nn.Module):
     def __init__(self, config: TransformerConfig):
