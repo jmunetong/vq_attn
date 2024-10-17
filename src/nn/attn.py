@@ -239,3 +239,130 @@ class VQAttention(nn.Module):
         return wv
     
 
+    def build_output_dicts(self, res, attn_output_dict, state):
+        new_state = self.update_state(
+            recent_z_k=attn_output_dict.get("recent_z_k"),
+            recent_k_hat=attn_output_dict.get("recent_k_hat"),
+            recent_v=attn_output_dict.get("recent_v"),
+            recent_doc_ids=attn_output_dict.get("recent_doc_ids"),
+            state=state,
+        )
+        output_dict = dict(
+            res=res,
+            l_commit=attn_output_dict.get("l_commit"),
+            l_codebook=attn_output_dict.get("l_codebook"),
+        )
+        return new_state, output_dict
+
+    def _apply_initializers(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
+
+    @staticmethod
+    def initial_state(config: dict):
+        """Method responsible for initializing the state of the transformer model
+
+        Args:
+            config (dict): Dictionary containing the configuration of the transformer model
+
+        Returns:
+            Dict: Dictionary containing the initial state of the transformer model
+        """
+
+        prefix = [int(config.global_batch_size), int(config.n_head)]
+        quantize_q = config.quantize_q
+        s_k = int(config.n_code_k)
+        m = int(config.mem_len)
+        d_k = int(config.d_k)
+        d_v = int(config.d_v)
+        # Setting variables for Key quantization
+        cache = {
+            'pos_offset': torch.tensor(0, dtype=torch.int32, device=config.device),
+            'aggcache': {
+                'upper_div_lower_k': torch.zeros([*prefix, s_k, d_v],
+                                                dtype=config.dtype, device=config.device),
+                'lower_k': torch.zeros([*prefix, s_k],
+                                    dtype=config.dtype, device=config.device),
+                'latest_doc_id': torch.zeros([prefix[0]],
+                                            dtype=torch.int32, device=config.device)
+            }
+        }
+
+        if not quantize_q:
+            cache['xlcache'] = {  'z_k': torch.full([*prefix, m], s_k - 1, dtype=torch.int32, device=config.device), 
+                                'k_hat': torch.zeros([*prefix, m, d_k], dtype=config.dtype, device=config.device),
+                                'v': torch.zeros([*prefix, m, d_v], dtype=config.dtype, device=config.device),
+                                'doc_ids': torch.zeros([*prefix, m], dtype=torch.int32, device=config.device)}
+
+        return cache
+    
+    @staticmethod
+    def rel_shift(x: torch.Tensor) -> torch.Tensor:
+        """Method responsible for shifting tensor to the right by adding padding
+
+        Args:
+            x (torch.Tensor): Input tensor
+
+        Returns:
+            torch.Tensor: Input tensor shifted to the right
+        """
+
+        *leading_shape, present_len, past_len = x.shape
+        x = torch.reshape(F.pad(x, (1,0)), [*leading_shape, past_len + 1, present_len])
+        x = x[..., 1:, :]
+        x = torch.reshape(x, [*leading_shape, present_len, past_len])
+        return x
+    
+
+    @staticmethod
+    def get_causal_mask(block_len: int, mem_len: int, invalid_len: torch.Tensor, with_locality, device):
+        """
+        Method responsible for generating causal mask for the transformer model
+
+        Args:
+            block_len (int): size of block-based computation
+            mem_len (int): memory steps in sequence length to consider
+            invalid_len (torch.Tensor): invalid length of sequence for masking. This relates to the memory lower
+                                        as it loops through the sequence
+            with_locality (bool): _description_
+
+        Returns:
+            _type_: _description_
+        """
+
+        assert block_len > 0 and mem_len >= 0
+        i = torch.arange(block_len, device=device).unsqueeze(-1)
+        j = torch.arange(mem_len + block_len, device=device).unsqueeze(0)
+        alloc_mask = j >= torch.tensor([invalid_len], device=device).unsqueeze(0)
+        causal_mask = (j - mem_len) <= i
+        window_mask = j >= i
+        keep_mask = alloc_mask & causal_mask
+        if with_locality:
+            keep_mask = keep_mask & window_mask
+        return keep_mask
+    
+    @staticmethod
+    def get_agg_biases(lower: torch.Tensor) -> torch.Tensor:
+        result = torch.where(
+            torch.eq(lower, torch.zeros_like(lower)),
+            -MASK_INFTY_APPROX,
+            torch.log(torch.maximum(lower, torch.ones_like(lower))),
+        )
+        return result
+    
+
+    def _get_q(self, x_tilde: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x_tilde (torch.Tensor): Normalized input
+
+        Returns:
+            torch.Tensor: Q matrix
+        """
+
+        q = self.q_proj(x_tilde)
+        q = rearrange(q, 't b s (h d) -> t b h s d', h=self.n_head)
+        q = self.q_ln(q) * (self.tau**-0.5)
+        q = rearrange(q, 't b h s d -> t b s (h d)', h=self.n_head)
+        return q
