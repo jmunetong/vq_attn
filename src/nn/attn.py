@@ -366,3 +366,318 @@ class VQAttention(nn.Module):
         q = self.q_ln(q) * (self.tau**-0.5)
         q = rearrange(q, 't b h s d -> t b s (h d)', h=self.n_head)
         return q
+    
+    def _get_kvg(self, x_tilde: torch.Tensor, verbose: bool=False):
+        """
+        Method that computes the keys, values, and gates for the transformer model
+
+        Args:
+            x_tilde (torch.Tensor): Input
+
+        Returns:
+            Tuple[torch.Tensor, Torch.Tensor, torch.Tensor]: The keys, values,
+            and g matrix projectors with respect to the input
+        """
+        # bsz, present_len, _ = x_tilde.shape
+
+        _,_, present_len, _ = x_tilde.shape
+        kvg = self.kvg_proj(x_tilde)
+        k, v, g = torch.split(kvg, [self.q_ch, self.v_ch, self.v_ch], dim=-1)
+        if verbose:
+            pass
+            # printc((k.shape, "shape of k before rearrangement"), color='green')
+            # printc((v.shape, "shape of v before rearrangement"), color='green')
+            # printc((g.shape, "shape of g before rearrangement"), color='green')
+            # printc((present_len, self.n_head * self.d_k), color='green')
+
+        assert k.shape[-2:] == (present_len, self.n_head * self.d_k)
+        assert v.shape[-2:] == (present_len, self.n_head * self.d_v)
+        assert g.shape[-2:] == (present_len, self.n_head * self.d_v)
+        k = rearrange(k, 't b s (h d) -> t b h s d', h=self.n_head)
+        v = rearrange(v, 't b s (h d) -> t b h s d', h=self.n_head)
+        k = self.k_ln(k) * (self.tau**-0.5)
+        v = self.v_ln(v)
+        g = self.SiLU(g)
+        # k,v = rearrange(k, 't b h s d -> t b s (h d)'), rearrange(v, 't b h s d -> t b s (h d)')
+        return k, v, g
+    
+
+    def get_xl_helpers(self):
+        """
+        Method that computes positional encoding for the transformer model
+        """
+        # compute helpers for xl biases (z dai et al.; 2019)
+        xl_r = SinusoidPE.get(length=self.mem_len + self.block_len,
+                            width=self.d_model,
+                            lam=self.pe_lam,
+                            flip=True, device=self.device)
+        assert xl_r.shape == (self.mem_len + self.block_len, self.d_model)
+
+        xl_r = self.dropSin(xl_r)
+        xl_r = self.f_proj(xl_r)
+        xl_r = torch.reshape(xl_r, [self.mem_len + self.block_len, self.n_head, self.d_k])
+        xl_r = torch.permute(xl_r, (1, 0, 2))
+        xl_r = xl_r * (self.tau**-0.5)
+        xl_u = torch.reshape(self.xl_u, [1, self.n_head, 1, self.d_k]) * (self.tau**-0.5)
+        xl_v = torch.reshape(self.xl_v, [1, self.n_head, 1, self.d_k]) * (self.tau**-0.5)
+
+        return xl_r, xl_u, xl_v
+    
+    def apply_mask_recent_scores(self, recent_scores_ac, recent_scores_bd, position_offset: int):
+        recent_scores_bd = recent_scores_bd * self.get_causal_mask(
+            block_len=self.block_len,
+            mem_len=self.mem_len,
+            invalid_len=F.relu(self.mem_len - position_offset),
+            with_locality=True,
+            device=self.device
+        )[None, None, ...].to(torch.int32)
+        recent_scores = recent_scores_ac + recent_scores_bd
+        keep_mask = self.get_causal_mask(
+        block_len=self.block_len,
+        mem_len=self.mem_len,
+        invalid_len=F.relu(self.mem_len - position_offset),
+        with_locality=not self.agg_cache,
+        device=self.device
+        )[None, None, ...].to(torch.int32)
+        recent_scores = recent_scores * keep_mask + MASK_INFTY_APPROX * (1 - keep_mask)
+        return recent_scores
+    
+
+    def update_state(self, recent_z_k: torch.Tensor, recent_k_hat: torch.Tensor, 
+                    recent_v: torch.Tensor, recent_doc_ids: torch.Tensor, state: dict):
+        aggcache = state["aggcache"]
+        recent_z_k = recent_z_k.long()
+
+        # compute kronecker deltas; invalid z's from xlcache init encode to zero vecs
+        delta = F.one_hot(
+            recent_z_k[..., : -self.mem_len],
+            num_classes=self.n_code,
+        )
+
+        # compute new position offset
+        new_pos_offset = 0
+        new_lower_k = torch.add(aggcache["lower_k"], torch.sum(delta, axis=-2))
+        # compute updated upper cache variable (stored in relative format for stability)
+        # i.e., we compute new_upper_div_lower by dividing axis S by counts in new_lower
+        f1 = aggcache["lower_k"] / torch.clip(new_lower_k, min=1.0)
+        f2 = delta / torch.unsqueeze(torch.clip(new_lower_k, min=1.0), -2)
+        new_upper_div_lower_k = torch.add(
+            f1[..., None] * aggcache["upper_div_lower_k"],
+            torch.einsum("bhls,bhlv->bhsv", f2, recent_v[..., : -self.mem_len, :]),
+        )
+
+        xlcache = dict(
+                z_k=recent_z_k[..., : -self.mem_len :],
+                k_hat=recent_k_hat[..., : -self.mem_len :],
+                v=recent_v[..., : -self.mem_len :],
+                doc_ids=recent_doc_ids[..., : -self.mem_len :],
+            )
+
+        aggcache=dict(
+            lower_k=new_lower_k,
+            upper_div_lower_k=new_upper_div_lower_k,
+            latest_doc_id_k=recent_doc_ids[..., : -self.mem_len - 1]
+        )
+
+        if not self.grad_thru_cache:
+            aggcache = dict(map(self._detach_item, aggcache.items()))
+            xlcache = dict(map(self._detach_item, xlcache.items()))
+            new_pos_offset = new_pos_offset.detach()
+
+        new_state = dict(
+            pos_offset=new_pos_offset,
+            xlcache=xlcache,
+            aggcache=aggcache
+        )
+
+        return new_state
+
+    @staticmethod
+    def _detach_item(item):
+        key, value = item
+        return key, value.detach()
+    
+
+class VQAttentionQK(VQAttention):
+    def __init__(self, config: TransformerConfig):
+        super().__init__(config)
+        self.n_code_q = config.n_code_q
+        config_q = asdict(self.config)
+        config_q.update({'d_model': self.d_k})
+        config_q.update({'n_code': self.n_code_q})
+        self.quantizer_q = LearnableVQ(config_q)
+        self.c_q_k = torch.Tensor().to(dtype=self.d_type)
+        self.reset_codebook_mult()  # Initial reset
+        # Register full backward hook
+        self.register_full_backward_hook(self._reset_after_backward)
+
+    def _reset_codebook_mult(self):
+        self.c_k = self.quantizer_k.get_codebook().to(dtype=self.d_type)
+        self.c_q = self.quantizer_q.get_codebook().to(dtype=self.d_type)
+        self.c_q_k = torch.exp(torch.einsum("hqd, hkd -> hqk", self.c_q, self.c_k)).to(dtype=self.d_type)
+
+    def _reset_after_backward(self, module, grad_input, grad_output):
+        """Hook to reset c_q_k after backward pass."""
+        self.reset_codebook_mult()
+        return grad_input
+
+    def mount_inference_codebooks(self, c_k = None, c_q = None):
+        self.quantizer_k.update_index(codebook=c_k)
+        self.quantizer_q.update_index(codebook=c_q)
+
+    def vq_attn(self, present_q: torch.Tensor, present_k: torch.Tensor,
+                present_v: torch.Tensor, present_doc_ids: torch.Tensor,
+                state: dict, loss_mask: torch.Tensor,
+                causal: bool = True) -> dict:
+        # Implementation continues
+        vq_output_dict_k, vq_output_dict_q = self.run_vqk(present_k=present_k,
+                                                  present_q=present_q,
+                                                  loss_mask=loss_mask)
+
+        # Accessing the codebook vectors along with the shortcodes
+        present_z_k = vq_output_dict_k["shortcodes"]
+        present_z_q = vq_output_dict_q["shortcodes"]
+
+        if self.agg_cache:
+            aggcache = state["aggcache"]
+
+        # Performs attention step
+        wv, delta_k_present, delta_k_v_present = self.attn(present_z_k=present_z_k,
+                                                        present_z_q=present_z_q,
+                                                        aggcache=aggcache,
+                                                        present_v=present_v,
+                                                        causal=causal)
+
+        l_commit = (vq_output_dict_k["l_commit"] + vq_output_dict_q["l_commit"])
+        l_codebook = (vq_output_dict_k["l_codebook"] + vq_output_dict_q["l_codebook"])
+
+
+        return dict(
+            attn_out=wv,
+            recent_z_k=[],
+            recent_k_hat=[],
+            recent_v=[],
+            recent_doc_ids=present_doc_ids,
+            delta_k_present=delta_k_present,
+            delta_k_v_present=delta_k_v_present,
+            l_commit=l_commit,
+            l_codebook=l_codebook,
+            l_commit_k=vq_output_dict_k["l_commit"],
+            l_commit_q=vq_output_dict_q["l_commit"]
+        )
+
+    def run_vq_attn(self, present_q: torch.Tensor, present_k: torch.Tensor,
+                    present_v: torch.Tensor,
+                    state: dict, loss_mask: torch.Tensor, causal: bool = True):
+        vq_output_dict_k, vq_output_dict_q = self.run_vqk(present_k=present_k,
+                                                  present_q=present_q,
+                                                  loss_mask=loss_mask, return_vecs_hat=False)
+        
+        present_z_k = vq_output_dict_k["shortcodes"]
+        present_z_q = vq_output_dict_q["shortcodes"]
+
+        if self.agg_cache:
+            aggcache = state["aggcache"]
+        else:
+            aggcache = None
+
+        wv, delta_k_present, delta_k_v_present = self.attn(present_z_k=present_z_k,
+                                                        present_z_q=present_z_q,
+                                                        aggcache=aggcache,
+                                                        present_v=present_v,
+                                                        causal=causal)
+        return wv, delta_k_present, delta_k_v_present
+     
+
+    def attn(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, present_v: torch.Tensor, aggcache: dict,
+             causal: bool = True) -> dict:  
+        
+        wv, delta_k_present, delta_k_v_present = self.compute_wv(present_z_k=present_z_k,
+                                                            present_z_q=present_z_q,
+                                                            present_v=present_v,
+                                                            aggcache=aggcache,
+                                                            causal=causal)
+        if wv.dim() == 4:
+            wv.unsqueeze(2)
+        wv = rearrange(wv, 't b h s d -> t b s (h d)', h=self.head, s=self.block_len, d=self.d_v)   
+        return wv, delta_k_present, delta_k_v_present
+    
+    def _compute_wv(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True) -> dict:
+        # Computing Delta_q = C_q_k
+        delta_q = F.one_hot(present_z_q.long(), num_classes=self.n_code_q).to(self.c_q_k.dtype)
+        q_cqk = torch.einsum("tbhsn, hnd -> tbhsd", delta_q, self.c_q_k)
+
+        # compute aggcache scores
+        # This computes L(n-1) (Cache from previous update step)
+        if self.agg_cache:
+            cache_biases = aggcache["lower_k"]
+            cache_scores = torch.einsum("tbhsd, bhd -> tbhsd", q_cqk, cache_biases)
+        
+        # Computing L(n)
+        present_v = present_v.unsqueeze(0) if present_v.dim() == 4 else present_v
+        present_z_k_one_hot = F.one_hot(present_z_k.long(), num_classes=self.n_code_k).to(self.d_type)
+        if causal:
+            delta_k_present = torch.cumsum(present_z_k_one_hot, dim=-2)
+            delta_k_v_present = torch.cumsum(torch.einsum("tbhsc, tbhsd -> tbhcd", delta_k_present, present_v), dim=0)
+        else:
+            delta_k_present = torch.sum(present_z_k_one_hot, dim=0, keepdim=True)
+            delta_k_v_present = torch.sum(torch.einsum("tbhsc, tbhsd -> tbhcd", delta_k_present, present_v), dim=0, keepdim=True)
+
+        recent_qk_hat = torch.einsum("tbhsk, tbhmk -> tbhsm", q_cqk, delta_k_present)
+        # This computes the denominator
+        d = torch.sum(recent_qk_hat, axis=-1, keepdim=True)
+        d = torch.cumsum(d, dim=0) if causal else torch.sum(d, axis=0, keepdim=True)
+
+        if self.agg_cache:
+            d = torch.sum(cache_scores, axis=-1, keepdim=True)
+        wv = torch.einsum("tbhwl, tbhw->tbhlv", q_cqk / d, delta_k_v_present)
+
+        if aggcache:
+            wv = wv + torch.einsum("tbhls, bhsv->tbhlv", cache_scores / d, aggcache["upper_div_lower_k"])
+        
+        return wv, delta_k_present, delta_k_v_present
+    
+
+    def update_state(self, delta_k_present: torch.Tensor,
+                        delta_k_v_present: torch.Tensor,
+                        state: dict, recent_doc_ids: torch.Tensor):
+
+        aggcache=state["aggcache"]
+        delta = delta_k_present[-1]
+        new_pos_offset = state['pos_offset'] + self.block_len
+        new_lower_k = torch.add(aggcache["lower_k"], torch.sum(delta, axis=-2))
+
+        f1 = aggcache["lower_k"] / torch.clip(new_lower_k, min=1.0)
+        f2 = 1 / torch.unsqueeze(torch.clip(new_lower_k, min=1.0), -1)
+        new_upper_div_lower_k = torch.add(
+            f1[..., None] * aggcache["upper_div_lower_k"],
+            f2 * delta_k_v_present[-1],
+        )
+        aggcache=dict(
+            lower_k=new_lower_k,
+            upper_div_lower_k=new_upper_div_lower_k,
+            latest_doc_id_k=rearrange(recent_doc_ids, 't b s -> b (t s)')
+        )
+        if not self.grad_thru_cache:
+            new_pos_offset = new_pos_offset.detach()
+            
+        new_state = dict(
+        pos_offset=new_pos_offset.detach(),
+        aggcache = dict(map(self._detach_item, aggcache.items()))
+        )
+
+        return new_state  
+
+    def _build_output_dicts(self, res, attn_output_dict, state):
+        new_state = self.update_state(
+            delta_k_present=attn_output_dict.get("delta_k_present"),
+            delta_k_v_present=attn_output_dict.get("delta_k_v_present"),
+            recent_doc_ids=attn_output_dict.get("recent_doc_ids"),
+            state=state,
+        )
+        output_dict = dict(
+            res=res,
+            l_commit=attn_output_dict.get("l_commit"),
+            l_codebook=attn_output_dict.get("l_codebook"),
+        )
+        return new_state, output_dict
