@@ -16,18 +16,54 @@ from transformer_vq.nn.norm import LayerNorm
 from transformer_vq.nn.pe import get_sinusoid_embs
 from transformer_vq.nn.types import TransformerConfig
 
+import torch
 
-@dataclasses.dataclass
-class VQSpec:
-    n_device: torch.Tensor
-    n_block_per_update: torch.Tensor
-    loss_mask: torch.Tensor
+def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask=None):
+    """
+    Function that computes the codebook loss for a VQ-VAE.
 
-    @classmethod
-    def create(cls, **kwargs):
-        signature = {field.name: field.type for field in dataclasses.fields(VQSpec)}
-        filtered = {k: v for k, v in kwargs.items() if k in signature}
-        return cls(**filtered)
+    Args:
+        vecs (torch.Tensor): Tensor of vectors, shape [B, H, S, D].
+        short_codes (torch.Tensor): Tensor of quantized indices, shape [B, H, S].
+        c_sum (torch.Tensor): Accumulated sum of vectors for each codebook vector, shape [H, L, D].
+        c_count (torch.Tensor): Count of vectors for each codebook vector, shape [H, L].
+        c_gamma (float): Momentum for EMA.
+        vq_spec: Configuration for the VQ-VAE, not detailed in the original.
+        loss_mask (torch.Tensor): Optional mask to apply to the loss.
+
+    Returns:
+        float: The codebook loss.
+    """
+    # Assume get_ema_targets is defined elsewhere to handle EMA updates
+    c_sum_tgt, c_count_tgt = get_ema_targets(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask)
+
+    # Compute the loss components
+    l_sum = torch.sum((c_sum - c_sum_tgt) ** 2)
+    l_count = torch.sum((c_count - c_count_tgt) ** 2)
+
+    # Total codebook loss
+    l_codebook = l_count + l_sum
+    return l_codebook
+
+def get_ema_targets(vecs: torch.Tensor, short_codes: torch.Tensor,
+                    c_count: torch.Tensor, c_sum: torch.Tensor,
+                    gamma: float, vq_spec: dict, loss_mask: torch.Tensor, 
+                    dtype):
+    d = vq_spec.get('n_device')
+    p = vq_spec.get('n_block_per_update')
+    momentum = gamma
+    num_code_vectors = c_sum.shape[1]
+    r = F.one_hot(short_codes.long(), num_classes=num_code_vectors)  # [B, S]
+
+    r = r * loss_mask.unsqueeze(-1)
+    c_sum_hat = d * p * torch.einsum("mbhts,mhbtsd->mbhtd", r, vecs)
+    
+    c_count_hat = d * p * torch.sum(r, dim=(0, 1, 2))  # TODO: CHECK THIS WHETHER IT IS ACCURATE IN BLOOM
+    c_sum_tgt = (1 - momentum) * c_sum + momentum * c_sum_hat
+    c_count_tgt = (1 - momentum) * c_count + momentum * c_count_hat
+
+    return c_sum_tgt, c_count_tgt
+
 
 
 def get_shortcodes(vecs, codebook):
