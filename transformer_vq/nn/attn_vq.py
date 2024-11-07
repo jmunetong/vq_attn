@@ -112,14 +112,14 @@ class VQAttentionQK(VQAttention):
                                                             causal=causal)
         if wv.dim() == 4:
             wv.unsqueeze(2)
-        wv = rearrange(wv, 't b h s d -> t b s (h d)', h=self.head, s=self.block_len, d=self.d_v)   
+        wv = rearrange(wv, 't b h s d -> t b s (h d)', h=self.n_head, s=self.block_len, d=self.d_v)   
         return wv, delta_k_present, delta_k_v_present
     
     def _compute_wv(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True) -> dict:
         # Computing Delta_q = C_q_k
         delta_q = F.one_hot(present_z_q.long(), num_classes=self.n_code_q).to(self.c_q_k.dtype)
         q_cqk = torch.einsum("tbhsn, hnd -> tbhsd", delta_q, self.c_q_k)
-
+        print(q_cqk.shape)
         # compute aggcache scores
         # This computes L(n-1) (Cache from previous update step)
         if self.agg_cache:
@@ -143,7 +143,9 @@ class VQAttentionQK(VQAttention):
 
         if self.agg_cache:
             d = torch.sum(cache_scores, axis=-1, keepdim=True)
-        wv = torch.einsum("tbhwl, tbhw->tbhlv", q_cqk / d, delta_k_v_present)
+
+        print(delta_k_v_present.shape)
+        wv = torch.einsum("tbhlw, tbhwv->tbhlv", q_cqk / d, delta_k_v_present)
 
         if aggcache:
             wv = wv + torch.einsum("tbhls, bhsv->tbhlv", cache_scores / d, aggcache["upper_div_lower_k"])

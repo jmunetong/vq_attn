@@ -78,7 +78,6 @@ def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
     """
     assert not codebook.requires_grad, "Codebook should not require gradients. \
     This is to compute commitment loss"
-    
     diffS2 = (
             torch.unsqueeze(torch.sum(torch.square(vecs), axis=-1), -1)
             - 2.0 * torch.einsum("tbhlk,hsk->tbhls", vecs, codebook)
@@ -201,7 +200,7 @@ class LearnableVQ(nn.Module):
 
     def get_codebook(self, epsilon: float = 0.01):
         c = self.w / torch.clamp(self.c_count.unsqueeze(-1), min=epsilon)
-        return c.detach()
+        return c.detach().to(dtype=self.d_type)
 
 
 

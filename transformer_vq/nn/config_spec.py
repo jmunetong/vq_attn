@@ -67,7 +67,13 @@ class TransformerConfig:
     def __init__(self,**kwargs):
         for k, v in kwargs.items():
             if k in self._get_attributes():
-                setattr(self, k, v) 
+                if k == 'param_dtype'or k == 'dtype':
+                    if type(v)== str:
+                        setattr(self, k, torch.float32 if v == 'float32' else torch.float64)
+                    else:
+                        setattr(self, k, v)
+                else:
+                    setattr(self, k, v) 
             else:
                 setattr(self, k, v)
 
