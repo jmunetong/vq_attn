@@ -1,4 +1,0 @@
-n_device: 0
-n_block_per_update: 32
-n_epoch: 100
-n_batch: 32
