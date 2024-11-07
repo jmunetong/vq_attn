@@ -14,7 +14,7 @@ from transformer_vq.nn.grad import sg
 from transformer_vq.nn.grad import st
 from transformer_vq.nn.norm import LayerNorm
 from transformer_vq.nn.pe import get_sinusoid_embs
-from transformer_vq.nn.types import TransformerConfig
+from transformer_vq.nn.config_spec import TransformerConfig
 from index import IndexSearcher # TODO: Fix this import 
 
 
