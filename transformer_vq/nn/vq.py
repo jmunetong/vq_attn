@@ -145,6 +145,7 @@ class LearnableVQ(nn.Module):
         self.n_code = int(self.n_code)
         self.d_model = int(self.d_model)
         self.w = nn.Parameter(torch.empty((self.n_head, self.n_code, self.d_model)).to(device=self.device, dtype=self.d_type))
+        self.c_count = nn.Parameter(torch.zeros((self.n_head, self.n_code)).to(device=self.device, dtype=self.d_type))
 
     def apply_config(self):
         for k, v in self.config.items():
@@ -169,8 +170,8 @@ class LearnableVQ(nn.Module):
         assert vecs.shape[-1] == self.d_model
         assert vecs.shape[-3] == self.n_head
         codebook = self.get_codebook(epsilon=0.01)
-        if not self.training and not self.index_searcher.is_codebook_ready():
-            self.update_index()
+        # if not self.training and not self.index_searcher.is_codebook_ready():
+        #     self.update_index()
         z, errs2 = get_shortcodes(vecs, codebook,
                                 training=self.training,
                                 flaiss_searcher=self.index_searcher if not self.training else None)
@@ -200,6 +201,10 @@ class LearnableVQ(nn.Module):
         cz = torch.take_along_dim(codebooks, indices=shortcodes, dim=-2)
         assert cz.shape == (*shortcodes.shape[:-1], codebooks.shape[-1])
         return cz
+
+    def get_codebook(self, epsilon: float = 0.01):
+        c = self.w / torch.clamp(self.c_count.unsqueeze(-1), min=epsilon)
+        return c.detach()
 
 
 

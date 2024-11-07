@@ -10,14 +10,17 @@ from transformer_vq.nn.config_spec import TransformerConfig
 
 class VQAttentionQK(VQAttention):
     def __init__(self, config: TransformerConfig):
-        super().__init__(config)
+        super(VQAttentionQK, self).__init__(config)
         self.n_code_q = config.n_code_q
-        config_q = asdict(self.config)
+        try:
+            config_q = asdict(self.config)
+        except:
+            config_q = self.config.__dict__
         config_q.update({'d_model': self.d_k})
         config_q.update({'n_code': self.n_code_q})
         self.quantizer_q = LearnableVQ(config_q)
         self.c_q_k = torch.Tensor().to(dtype=self.d_type)
-        self.reset_codebook_mult()  # Initial reset
+        self._reset_codebook_mult()  # Initial reset
         # Register full backward hook
         self.register_full_backward_hook(self._reset_after_backward)
 

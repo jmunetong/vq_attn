@@ -49,6 +49,9 @@ class TransformerConfig:
     e_scale: str
     is_train: bool
     no_emb: bool = False
+    n_code_q: int = 128
+    n_code_k: int = 128
+    quantize_q: bool = True
 
     def _get_attributes(self):
         return [
@@ -65,4 +68,6 @@ class TransformerConfig:
         for k, v in kwargs.items():
             if k in self._get_attributes():
                 setattr(self, k, v) 
+            else:
+                setattr(self, k, v)
 

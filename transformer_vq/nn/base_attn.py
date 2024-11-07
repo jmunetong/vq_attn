@@ -38,28 +38,30 @@ class VQAttention(nn.Module):
     quantize_q: bool
     tau: float
 
-    def __init__(self, config: TransformerConfig):
-        super().__init__()
+    def __init__(self, config):
+        super(VQAttention, self).__init__()
         self.config = config
         self.apply_config()
-
         self.tau = self.d_k**0.5
-        self.n_head = int(self.n.head)
-        self.input_ln = LayerNorm(self.d_model)
+        self.n_head = int(self.n_head)
+        self.n_code_k = int(self.n_code)
+        self.input_ln = LayerNorm(self.d_model, self.d_k, gain=False, bias=False)
         self.q_in = LayerNorm(self.d_model)
+        self.q_ch = int(self.n_head * self.d_k)
         self.k_ch = int(self.n_head * self.d_k)
         self.v_ch = int(self.n_head * self.d_v)
         self.k_ln = LayerNorm(self.d_model, self.d_k, gain=False, bias=False)
         self.q_ln = LayerNorm(self.d_model, self.d_k, gain=False, bias=False)
-        self.k_proj = nn.Linear(self.d_model, self.k_ch + self.v_ch, bias=False)
-        self.v_proj = nn.Linear(self.d_model, self.k_ch + self.v_ch, bias=False)
+        self.q_proj = nn.Linear(self.d_model, self.q_ch, bias=False)
+        self.kvg_proj = nn.Linear(self.d_model, self.k_ch + self.v_ch + self.v_ch , bias=False)
+        # self.v_proj = nn.Linear(self.d_model, self.k_ch + self.v_ch, bias=False)
         self.r_proj = nn.Linear(self.v_ch, self.d_model, bias=False)
         self.res_proj = nn.Linear(self.v_ch, self.d_model, bias=False)
         self.x_proj = nn.Parameter(torch.zeros(self.n_head, self.d_k))
         self.x_u = nn.Parameter(torch.zeros(self.n_head, self.d_k))
         self.x_v = nn.Parameter(torch.zeros(self.n_head, self.d_k))
         self.n_code_k = int(self.n_code_k)
-        config_k = asdict(self.config)
+        config_k = self.config.__dict__
         config_k.update({'d_model': self.d_k})
         config_k.update({'n_code': int(self.n_code_k)})
         self.n_code = self.n_code_k
@@ -72,7 +74,13 @@ class VQAttention(nn.Module):
         self._apply_initializers()
 
     def apply_config(self):
-        for k, v in dataclasses.asdict(self.config).items():
+        # try:
+        #     data_dict = dataclasses.asdict(self.config)
+        # except:
+        #     data_dict = self.config.__dict__
+        data_dict = self.config.__dict__
+
+        for k, v in data_dict.items():
             setattr(self, k, v)
 
     def mount_codebook(self, codebook_k: torch.Tensor=None, codebook_q: torch.Tensor=None):
@@ -127,8 +135,8 @@ class VQAttention(nn.Module):
 
     def compute_k_q_v_g(self, x: torch.Tensor):
         x_tilde = self.input_ln(x)
-        q = self.get_q(x_tilde=x_tilde)
-        k, v, g = self.get_kvg(x_tilde=x_tilde)
+        q = self._get_q(x_tilde=x_tilde)
+        k, v, g = self._get_kvg(x_tilde=x_tilde)
         return q, k, v, g
     
     def vq_attn(self, present_q: torch.Tensor, 
@@ -362,9 +370,9 @@ class VQAttention(nn.Module):
         """
 
         q = self.q_proj(x_tilde)
-        q = rearrange(q, 't b s (h d) -> t b h s d', h=self.n_head)
+        q = rearrange(q, 't b s (h d) -> t b s h d', h=self.n_head)
         q = self.q_ln(q) * (self.tau**-0.5)
-        q = rearrange(q, 't b h s d -> t b s (h d)', h=self.n_head)
+        q = rearrange(q, 't b s h d -> t b h s d', h=self.n_head)
         return q
     
     def _get_kvg(self, x_tilde: torch.Tensor, verbose: bool=False):
@@ -396,7 +404,7 @@ class VQAttention(nn.Module):
         k = rearrange(k, 't b s (h d) -> t b h s d', h=self.n_head)
         v = rearrange(v, 't b s (h d) -> t b h s d', h=self.n_head)
         k = self.k_ln(k) * (self.tau**-0.5)
-        v = self.v_ln(v)
+        v = self.SiLU(v)
         g = self.SiLU(g)
         # k,v = rearrange(k, 't b h s d -> t b s (h d)'), rearrange(v, 't b h s d -> t b s (h d)')
         return k, v, g

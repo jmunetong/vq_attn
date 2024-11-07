@@ -11,10 +11,10 @@ d_model: 1024
 d_k: 128
 d_v: 128
 d_ff: 128
-n_head: 3
+n_head: 1
 n_code: 128
 n_layer: 4
-n_vocab: 16384
+n_vocab: 2048
 pe_abs: False
 pe_lam: 0.0
 p_dropemb: 0.0
@@ -29,3 +29,21 @@ e_preln: 1
 e_scale: 0.005
 is_train: False
 no_emb: False
+n_code_k: 128
+n_code_q: 128
+device: 'cpu'
+
+
+            # 'n_head',
+            # 'n_code',
+            # 'd_model',
+            # 'c_gamma',
+            # 'param_dtype',
+            # 'device',
+            # 'index_name',
+            # 'n_probe',
+            # 'n_list',
+            # 'n_bits',
+            # 'M',
+            # 'ef_search',
+            # 'ef_construction'
