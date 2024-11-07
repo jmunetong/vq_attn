@@ -4,7 +4,7 @@ from einops import rearrange
 from dataclasses import asdict
 
 from transformer_vq.nn.base_attn import VQAttention
-from transformer_vq.nn import LearnableVQ
+from transformer_vq.nn.vq import LearnableVQ
 from transformer_vq.nn.config_spec import TransformerConfig
 
 

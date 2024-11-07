@@ -15,7 +15,7 @@ from transformer_vq.nn.grad import st
 from transformer_vq.nn.norm import LayerNorm
 from transformer_vq.nn.pe import get_sinusoid_embs
 from transformer_vq.nn.config_spec import TransformerConfig
-from index import IndexSearcher # TODO: Fix this import 
+# from index import IndexSearcher # TODO: Fix this import 
 
 
 def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask=None):
@@ -65,7 +65,7 @@ def get_ema_targets(vecs: torch.Tensor, short_codes: torch.Tensor,
     return c_sum_tgt, c_count_tgt
 
 def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
-                   training=True, flaiss_searcher: IndexSearcher=None): # TODO: CREATE INDEX SEARCHER
+                   training=True, flaiss_searcher= None): # TODO: CREATE INDEX SEARCHER
     """
     Function to get shortcodes for the given vectors and codebook.
     In addition, it also computes the commitment loss.
@@ -83,21 +83,28 @@ def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
     """
     assert not codebook.requires_grad, "Codebook should not require gradients. \
     This is to compute commitment loss"
-
-    if training:
-        diffS2 = (
+    
+    diffS2 = (
             torch.unsqueeze(torch.sum(torch.square(vecs), axis=-1), -1)
             - 2.0 * torch.einsum("tbhlk,hsd->tbhls", vecs, codebook)
             + torch.unsqueeze(torch.unsqueeze(torch.sum(torch.square(codebook), axis=-1), 0), 0)
         )  # B, H, L, S
-        assert diffS2.shape == (vecs.shape[:-1] + codebook.shape[1:])
-        errs2, z = torch.min(diffS2, axis=-1)
-    else:
-        if flaiss_searcher is None:
-            raise ValueError("FLAISS searcher is required for inference")
-        else:
-            z, errs2 = flaiss_searcher.get_closest(vecs, k=1)
-        errs2 = nn.ReLU()(errs2)  # this is a no-op if using infinite precision
+    assert diffS2.shape == (vecs.shape[:-1] + codebook.shape[1:])
+    errs2, z = torch.min(diffS2, axis=-1)
+    # if training:
+    #     diffS2 = (
+    #         torch.unsqueeze(torch.sum(torch.square(vecs), axis=-1), -1)
+    #         - 2.0 * torch.einsum("tbhlk,hsd->tbhls", vecs, codebook)
+    #         + torch.unsqueeze(torch.unsqueeze(torch.sum(torch.square(codebook), axis=-1), 0), 0)
+    #     )  # B, H, L, S
+    #     assert diffS2.shape == (vecs.shape[:-1] + codebook.shape[1:])
+    #     errs2, z = torch.min(diffS2, axis=-1)
+    # else:
+    #     if flaiss_searcher is None:
+    #         raise ValueError("FLAISS searcher is required for inference")
+    #     else:
+    #         z, errs2 = flaiss_searcher.get_closest(vecs, k=1)
+    #     errs2 = nn.ReLU()(errs2)  # this is a no-op if using infinite precision
 
     return z, errs2
 

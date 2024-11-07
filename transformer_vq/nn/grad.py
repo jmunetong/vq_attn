@@ -1,6 +1,6 @@
 import torch
 
-def stop_gradient(vector: torch.Tensor) -> torch.Tensor:
+def sg(vector: torch.Tensor) -> torch.Tensor:
     """
     Returns a new tensor from the input vector, detached from the current computation graph.
     
@@ -11,3 +11,6 @@ def stop_gradient(vector: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A new tensor that does not require gradients.
     """
     return vector.detach()
+
+def st(x):
+    return x - sg(x)
