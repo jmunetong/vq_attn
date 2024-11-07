@@ -105,7 +105,7 @@ class VQAttentionQK(VQAttention):
     def attn(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, present_v: torch.Tensor, aggcache: dict,
              causal: bool = True) -> dict:  
         
-        wv, delta_k_present, delta_k_v_present = self.compute_wv(present_z_k=present_z_k,
+        wv, delta_k_present, delta_k_v_present = self._compute_wv(present_z_k=present_z_k,
                                                             present_z_q=present_z_q,
                                                             present_v=present_v,
                                                             aggcache=aggcache,

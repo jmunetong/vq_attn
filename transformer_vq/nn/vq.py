@@ -15,7 +15,7 @@ from transformer_vq.nn.grad import st
 # from index import IndexSearcher # TODO: Fix this import 
 
 
-def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask=None):
+def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask=None, dtype=torch.float32):
     """
     Function that computes the codebook loss for a VQ-VAE.
 
@@ -45,7 +45,7 @@ def codebook_loss(vecs, short_codes, c_sum, c_count, c_gamma, vq_spec, loss_mask
 def get_ema_targets(vecs: torch.Tensor, short_codes: torch.Tensor,
                     c_count: torch.Tensor, c_sum: torch.Tensor,
                     gamma: float, vq_spec: dict, loss_mask: torch.Tensor, 
-                    dtype):
+                    dtype=torch.float32):
     d = vq_spec.get('n_device')
     p = vq_spec.get('n_block_per_update')
     momentum = gamma
@@ -53,12 +53,10 @@ def get_ema_targets(vecs: torch.Tensor, short_codes: torch.Tensor,
     r = F.one_hot(short_codes.long(), num_classes=num_code_vectors)  # [B, S]
 
     r = r * loss_mask.unsqueeze(-1)
-    c_sum_hat = d * p * torch.einsum("mbhts,mhbtsd->mbhtd", r, vecs)
-    
-    c_count_hat = d * p * torch.sum(r, dim=(0, 1, 2))  # TODO: CHECK THIS WHETHER IT IS ACCURATE IN BLOOM
+    c_sum_hat = d * p * torch.einsum("mbhts,mbhtd->mbhsd", r, vecs)
+    c_count_hat = d * p * torch.sum(r, dim=(0, 1, -2))  # TODO: CHECK THIS WHETHER IT IS ACCURATE IN BLOOM
     c_sum_tgt = (1 - momentum) * c_sum + momentum * c_sum_hat
     c_count_tgt = (1 - momentum) * c_count + momentum * c_count_hat
-
     return c_sum_tgt, c_count_tgt
 
 def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
@@ -83,10 +81,10 @@ def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
     
     diffS2 = (
             torch.unsqueeze(torch.sum(torch.square(vecs), axis=-1), -1)
-            - 2.0 * torch.einsum("tbhlk,hsd->tbhls", vecs, codebook)
-            + torch.unsqueeze(torch.unsqueeze(torch.sum(torch.square(codebook), axis=-1), 0), 0)
+            - 2.0 * torch.einsum("tbhlk,hsk->tbhls", vecs, codebook)
+            + torch.unsqueeze(torch.unsqueeze(torch.sum(torch.square(codebook), axis=-1), 0), 2)
         )  # B, H, L, S
-    assert diffS2.shape == (vecs.shape[:-1] + codebook.shape[1:])
+    assert diffS2.shape == (*vecs.shape[:-1], codebook.shape[1])
     errs2, z = torch.min(diffS2, axis=-1)
     # if training:
     #     diffS2 = (
@@ -101,8 +99,7 @@ def get_shortcodes(vecs: torch.Tensor, codebook: torch.Tensor,
     #         raise ValueError("FLAISS searcher is required for inference")
     #     else:
     #         z, errs2 = flaiss_searcher.get_closest(vecs, k=1)
-    #     errs2 = nn.ReLU()(errs2)  # this is a no-op if using infinite precision
-
+    errs2 = nn.ReLU()(errs2)  # this is a no-op if using infinite precision
     return z, errs2
 
 class LearnableVQ(nn.Module):
@@ -184,7 +181,7 @@ class LearnableVQ(nn.Module):
         if self.training:
             loss_mask = loss_mask.unsqueeze(1)
             l_commit = torch.mean(torch.sum(loss_mask.unsqueeze(1) * errs2, dim=1)) ## TODO: CHECK THIS LOSSS
-            l_codebook = codebook_loss(vecs, z, self.w, self.c_count, self.c_gamma, self, loss_mask)
+            l_codebook = codebook_loss(vecs, z, self.w, self.c_count, self.c_gamma, self.config, loss_mask)
         else:
             l_commit = torch.tensor(0)
             l_codebook = torch.tensor(0)

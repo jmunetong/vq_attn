@@ -24,5 +24,13 @@ data = emb(data)
 block_len = config['block_len']
 data = rearrange(data, 'b (l s) d -> l b s d', l=block_len)
 q,k, v, g = model.compute_k_q_v_g(data)
-print(q.shape, k.shape, v.shape, g.shape)
+vq_output_dict_k, vq_output_dict_q  = model.run_vqk(present_k=k, present_q=q, loss_mask=torch.Tensor([1]), return_vecs_hat=False)
+present_z_k = vq_output_dict_k["shortcodes"]
+present_z_q = vq_output_dict_q["shortcodes"]
+wv, _, _ = model.attn(present_z_k=present_z_k,
+                                                present_z_q=present_z_q,
+                                                aggcache=None,
+                                                present_v=v,
+                                                causal=True)
+
 # data = rearrange(data, 'b s d -> b (s d)')
