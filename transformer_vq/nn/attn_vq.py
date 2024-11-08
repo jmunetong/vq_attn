@@ -126,7 +126,7 @@ class VQAttentionQK(VQAttention):
          # Computing Delta_q = C_q_k
         delta_q = F.one_hot(present_z_q.long(), num_classes=self.n_code_q).to(self.c_q_k.dtype)
         q_cqk = torch.einsum("tbhsn, hnd -> tbhsd", delta_q, self.c_q_k)
-        print(q_cqk.shape)
+
         # compute aggcache scores
         # This computes L(n-1) (Cache from previous update step)
         if self.agg_cache:
@@ -198,7 +198,6 @@ class VQAttentionQK(VQAttention):
 
         wv = torch.einsum("tblw, tbwv->tblv", q_cqk / d, delta_k_v_present)
         if aggcache:
-            print(cache_scores.shape, d.shape, aggcache["upper_div_lower_k"].shape)
             wv = wv + torch.einsum("tbls, bsv->tblv", cache_scores / d, aggcache["upper_div_lower_k"])
         wv = rearrange(wv, 't b (1 l) v -> t b 1 l v')
         delta_k_present = rearrange(delta_k_present, 't b (1 s) d -> t b 1 s d')
