@@ -31,7 +31,7 @@ is_train: False
 no_emb: False
 n_code_k: 128
 n_code_q: 128
-device: 'cpu'
+device: 'gpu'
 n_device: 1
 n_block_per_update: 1
 
