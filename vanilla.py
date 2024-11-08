@@ -55,7 +55,7 @@ class Transformer(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, n_head=1, dropout=0):
+    def __init__(self, embed_dim, n_heads=1, dropout=0):
         super().__init__()
         self.head_dim = embed_dim // n_heads
         self.n_heads = n_heads

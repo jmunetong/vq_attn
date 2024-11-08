@@ -8,7 +8,8 @@ from transformer_vq.nn.emb import TransformerEmbedding as Emb
 import yaml
 from einops import rearrange
 from hyper_attn.hyper_attn import HyperAttention
-from vanilla_attn import vanilla_attention
+from vanilla import MultiHeadAttention
+# from vanilla_attn import vanilla_attention
 
 def setup_config():
     with open('conf.yml') as f:
@@ -77,9 +78,11 @@ def run_experiment(data, causal, config):
     # hyper_attn_time = end_time - start_time
     # print(f'Hyper Attention time: {hyper_attn_time}')
     hyper_attn_time = 0
+    
+    vanilla_attention_model = compile_vanilla_attn(config['d_model'], config['n_head'], config['device'])
     with torch.inference_mode():
         start_time = time.time()
-        compile_vanilla_attn(q, k, v)
+        vanilla_attention_model.attn(q, k, v)
         end_time = time.time()
     vanilla_attn_time = end_time - start_time
     print(f'Vanilla Attention time: {vanilla_attn_time}')
@@ -98,9 +101,10 @@ def compile_hyper_attn(dim, device):
         cuda=device)
     return attn
 
-def compile_vanilla_attn(queries, keys, values):
+def compile_vanilla_attn(n_dim , n_heads, device ):
     # shape(batch, sequence_length, num_heads, hidden_size)
-    vanilla_attention(queries, keys, values)
+    model = MultiHeadAttention(n_dim, n_heads, 0.0).to(device)
+    return model
 
 def main():
     sequence_lengths = [1024 * 2**i for i in range(0,9)]
