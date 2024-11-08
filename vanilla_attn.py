@@ -10,7 +10,7 @@ def clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 # Implement attention (Scaled Dot Product)
-def attention(query, key, value, mask=None, dropout=None):
+def vanilla_attention(query, key, value, mask=None, dropout=None):
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
@@ -45,7 +45,7 @@ class MultiHeadedAttention(nn.Module):
                              for l, x in zip(self.linears, (query, key, value))]
         
         # 2) Apply attention on all the projected vectors in batch. 
-        x, self.attn = attention(query, key, value, mask=mask, dropout=self.dropout)
+        x, self.attn = vanilla_attention(query, key, value, mask=mask, dropout=self.dropout)
         
         # 3) "Concat" using a view and apply a final linear. 
         x = x.transpose(1, 2).contiguous().view(nbatches, -1, self.h * self.d_k)
