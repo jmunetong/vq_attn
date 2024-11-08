@@ -22,9 +22,12 @@ def build_data(config):
     n_vocab = config['n_vocab']
     sequence_length = config['sequence_len']
     d_model = config['d_model']
+    print(sequence_length)
     data = torch.randint(low=0, high=n_vocab, size=(4, sequence_length)).to(device=config['device'])
-    emb = Emb(n_vocab, d_model).to(device=config['device']).no_grad()
+    print(data.shape)
+    emb = Emb(n_vocab, d_model).to(device=config['device'])
     data = emb(data)
+    print(data.shape)
     return data
 
 def empty_cache(config):
@@ -33,15 +36,17 @@ def empty_cache(config):
     else:
         torch.cuda.empty_cache()
 
-def run_experiment(causal, config):
+def run_experiment(data, causal, config):
     d_model = config['d_model'] 
     model_config = TransformerConfig(**config)
     model = VQAttentionQK(model_config).to(device=config['device'])
     init_state = model.initial_state(model_config)
-    model.compile()
     block_len = config['block_len']
-    data = rearrange(data, 'b (l s) d -> l b s d', l=block_len)
+    sequence_len = config['sequence_len']
+    data = rearrange(data, 'b (l s) d -> l b s d', l=sequence_len//block_len, s=block_len)
+    print(data.shape)   
     q,k, v, _  = model.compute_k_q_v_g(data)
+    print(q.shape, k.shape, v.shape)    
     vq_output_dict_k, vq_output_dict_q  = model.run_vqk(present_k=k, present_q=q, loss_mask=torch.Tensor([1]), return_vecs_hat=False)
     present_z_k = vq_output_dict_k["shortcodes"]
     present_z_q = vq_output_dict_q["shortcodes"]
@@ -56,25 +61,32 @@ def run_experiment(causal, config):
                         causal=causal)
         end_time = time.time()
     vq_time = end_time - start_time
+    print(f'VQ time: {vq_time}')
     ###### Hyper Attention Runtime
-    hyper_attn = compile_hyper_attn(causal, d_model)    
-    with torch.inference_mode():
-        #TODO: ENSURE Q,K,V ARE IN THE CORRECT SHAPE
-        start_time = time.time()
-        hyper_attn(q, k, v, causal=causal)
-        end_time = time.time()
-    hyper_attn_time = end_time - start_time
+    q = rearrange(q, 't b h s d -> b (t s) h  d')
+    k = rearrange(k, 't b h s d -> b (t s) h  d')
+    v = rearrange(v, 't b h s d -> b (t s) h  d')
+    
+    hyper_attn = compile_hyper_attn(q.shape[-1], d_model)    
+    # with torch.inference_mode():
+    #     start_time = time.time()
+    #     hyper_attn(q, k, v, causal=causal)
+    #     end_time = time.time()
 
+    
+    # hyper_attn_time = end_time - start_time
+    # print(f'Hyper Attention time: {hyper_attn_time}')
+    hyper_attn_time = 0
     with torch.inference_mode():
         start_time = time.time()
         compile_vanilla_attn(q, k, v)
         end_time = time.time()
     vanilla_attn_time = end_time - start_time
+    print(f'Vanilla Attention time: {vanilla_attn_time}')
 
     return vq_time, hyper_attn_time, vanilla_attn_time
 
-    
-def compile_hyper_attn(causal, dim, device):
+def compile_hyper_attn(dim, device):
     #(batch_size, head_size, seq_len, dim)
     block_size = 256
     sample_size = 256
@@ -82,7 +94,7 @@ def compile_hyper_attn(causal, dim, device):
         input_dim=dim, 
         block_size=block_size,
         sample_size=sample_size,
-        min_seq_len=1024,
+        min_seq_len=512,
         cuda=device)
     return attn
 
@@ -91,25 +103,29 @@ def compile_vanilla_attn(queries, keys, values):
     vanilla_attention(queries, keys, values)
 
 def main():
-    sequence_lengths = [1024 * i*8 for i in range(40)]
+    sequence_lengths = [1024 * 2**i for i in range(0,9)]
     causal = True
     config = setup_config()
     vq, hyper_attn, vanilla_attn = [], [], []
     for sequence_length in sequence_lengths:
         config['sequence_len'] = sequence_length
         data = build_data(config)
-        vq_time, hyper_attn_time, vanilla_attn_time = run_experiment(causal, config)
+        vq_time, hyper_attn_time, vanilla_attn_time = run_experiment(data, causal, config)
         vq.append(vq_time)
         hyper_attn.append(hyper_attn_time)
         vanilla_attn.append(vanilla_attn_time)
 
+    print(vq, hyper_attn, vanilla_attn)
 
+# def get_tensors(batch_size, seq_len, head_size, dim):
+#     q = torch.randn((batch_size, seq_len, head_size, dim), dtype=torch.bfloat16, device="cuda", requires_grad=True)
+#     k = torch.randn((batch_size, seq_len, head_size, dim), dtype=torch.bfloat16, device="cuda", requires_grad=True)
+#     v = torch.randn((batch_size, seq_len, head_size, dim), dtype=torch.bfloat16, device="cuda", requires_grad=True)
+#     return q, k, v
 
 if __name__ == '__main__':
+    main()
 
-
-
-    setup_experiment()
 
 
 

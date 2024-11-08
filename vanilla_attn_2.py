@@ -55,7 +55,7 @@ class Transformer(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads, dropout):
+    def __init__(self, embed_dim, n_head=1, dropout=0):
         super().__init__()
         self.head_dim = embed_dim // n_heads
         self.n_heads = n_heads
@@ -88,6 +88,19 @@ class MultiHeadAttention(nn.Module):
         x = x.view(N, -1, self.embed_dim)        # shape: [N, query_len, embed_dim]
         x = self.proj(x)
 
+        return x
+    
+    def attn(self, Q, K, V, mask=None):
+        N = Q.size(0)  
+        energy = (Q @ K.permute(0, 1, 3, 2)) / self.scale
+        if mask is not None:
+            energy = energy.masked_fill(mask == 0, -1e20)
+
+        attention = energy.softmax(-1)           # shape: [N, n_heads, query_len, key_len]
+        x = self.dropout(attention) @ V          # shape: [N, n_heads, query_len, key_len]
+        x = x.permute(0, 2, 1, 3).contiguous()   # shape: [N, query_len, n_heads, head_dim]
+        x = x.view(N, -1, self.embed_dim)        # shape: [N, query_len, embed_dim]
+        x = self.proj(x)
         return x
 
 
