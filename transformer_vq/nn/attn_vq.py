@@ -116,7 +116,14 @@ class VQAttentionQK(VQAttention):
         return wv, delta_k_present, delta_k_v_present
     
     def _compute_wv(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True) -> dict:
-        # Computing Delta_q = C_q_k
+        if self.n_head ==1:
+            wv, delta_k_present, delta_k_v_present = self._one_head_atten(present_z_k=present_z_k, present_z_q=present_z_q, aggcache=aggcache, present_v=present_v,causal=causal)
+        else:
+            wv, delta_k_present, delta_k_v_present = self._two_head_atten(present_z_k=present_z_k, present_z_q=present_z_q, aggcache=aggcache, present_v=present_v,causal=causal)
+        return wv, delta_k_present, delta_k_v_present
+    
+    def _two_head_atten(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True):
+         # Computing Delta_q = C_q_k
         delta_q = F.one_hot(present_z_q.long(), num_classes=self.n_code_q).to(self.c_q_k.dtype)
         q_cqk = torch.einsum("tbhsn, hnd -> tbhsd", delta_q, self.c_q_k)
         print(q_cqk.shape)
@@ -135,7 +142,7 @@ class VQAttentionQK(VQAttention):
         else:
             delta_k_present = torch.sum(present_z_k_one_hot, dim=0, keepdim=True)
             delta_k_v_present = torch.sum(torch.einsum("tbhsc, tbhsd -> tbhcd", delta_k_present, present_v), dim=0, keepdim=True)
-
+        
         recent_qk_hat = torch.einsum("tbhsk, tbhmk -> tbhsm", q_cqk, delta_k_present)
         # This computes the denominator
         d = torch.sum(recent_qk_hat, axis=-1, keepdim=True)
@@ -143,16 +150,61 @@ class VQAttentionQK(VQAttention):
 
         if self.agg_cache:
             d = torch.sum(cache_scores, axis=-1, keepdim=True)
-
-        print(delta_k_v_present.shape)
         wv = torch.einsum("tbhlw, tbhwv->tbhlv", q_cqk / d, delta_k_v_present)
-
         if aggcache:
             wv = wv + torch.einsum("tbhls, bhsv->tbhlv", cache_scores / d, aggcache["upper_div_lower_k"])
         
         return wv, delta_k_present, delta_k_v_present
     
+    def _format_one_head(self, present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True):
+        if aggcache['lower_k'].ndim== 3:
+            aggcache['lower_k'] = rearrange(aggcache['lower_k'], 'b c d -> b (c d)')
+        if aggcache['upper_div_lower_k'].ndim== 4:
+            aggcache['upper_div_lower_k'] = rearrange(aggcache['upper_div_lower_k'], 'b h s v -> b (h s) v')
 
+        present_z_k = rearrange(present_z_k, 't b c n -> t b (c n)')
+        present_z_q = rearrange(present_z_q, 't b c n -> t b (c n)')
+        present_v = rearrange(present_v, 't b 1 c n -> t b (1 c) n')
+        return present_z_k, present_z_q, present_v
+
+
+    def _one_head_atten(self,  present_z_k: torch.Tensor, present_z_q: torch.Tensor, aggcache: dict, present_v: torch.Tensor,causal: bool = True):
+        present_z_k, present_z_q, present_v = self._format_one_head(present_z_k, present_z_q, aggcache, present_v, causal)
+        delta_q = F.one_hot(present_z_q.long(), num_classes=self.n_code_q).to(self.c_q_k.dtype)
+        q_cqk = torch.einsum("tbsn, nd -> tbsd", delta_q, rearrange(self.c_q_k, '1 h d -> (1 h) d'))
+        # compute aggcache scores
+        # This computes L(n-1) (Cache from previous update step)
+        if self.agg_cache:
+            cache_biases = aggcache["lower_k"]
+            cache_scores = torch.einsum("tbsd, bd -> tbsd", q_cqk, cache_biases)
+        
+        # Computing L(n)
+        # present_v = present_v.unsqueeze(0) if present_v.dim() == 4 else present_v
+        present_z_k_one_hot = F.one_hot(present_z_k.long(), num_classes=self.n_code_k).to(self.d_type)
+        if causal:
+            delta_k_present = torch.cumsum(present_z_k_one_hot, dim=-2)
+            delta_k_v_present = torch.cumsum(torch.einsum("tbsc, tbsd -> tbcd", delta_k_present, present_v), dim=0)
+        else:
+            delta_k_present = torch.sum(present_z_k_one_hot, dim=0, keepdim=True)
+            delta_k_v_present = torch.sum(torch.einsum("tbsc, tbsd -> tbcd", delta_k_present, present_v), dim=0, keepdim=True)
+        
+        recent_qk_hat = torch.einsum("tbsk, tbmk -> tbsm", q_cqk, delta_k_present)
+        # This computes the denominator
+        d = torch.sum(recent_qk_hat, axis=-1, keepdim=True)
+        d = torch.cumsum(d, dim=0) if causal else torch.sum(d, axis=0, keepdim=True)
+
+        if self.agg_cache:
+            d = torch.sum(cache_scores, axis=-1, keepdim=True)
+
+        wv = torch.einsum("tblw, tbwv->tblv", q_cqk / d, delta_k_v_present)
+        if aggcache:
+            print(cache_scores.shape, d.shape, aggcache["upper_div_lower_k"].shape)
+            wv = wv + torch.einsum("tbls, bsv->tblv", cache_scores / d, aggcache["upper_div_lower_k"])
+        wv = rearrange(wv, 't b (1 l) v -> t b 1 l v')
+        delta_k_present = rearrange(delta_k_present, 't b (1 s) d -> t b 1 s d')
+        delta_k_v_present = rearrange(delta_k_v_present, 't b (1 s) d -> t b 1 s d')
+        return wv, delta_k_present, delta_k_v_present
+    
     def update_state(self, delta_k_present: torch.Tensor,
                         delta_k_v_present: torch.Tensor,
                         state: dict, recent_doc_ids: torch.Tensor):

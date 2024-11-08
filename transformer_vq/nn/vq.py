@@ -168,6 +168,8 @@ class LearnableVQ(nn.Module):
         codebook = self.get_codebook(epsilon=0.01)
         # if not self.training and not self.index_searcher.is_codebook_ready():
         #     self.update_index()
+        if loss_mask.device != self.device:\
+            loss_mask = loss_mask.to(device=self.device)
         z, errs2 = get_shortcodes(vecs, codebook,
                                 training=self.training,
                                 flaiss_searcher=self.index_searcher if not self.training else None)
