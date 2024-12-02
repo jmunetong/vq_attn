@@ -9,6 +9,7 @@ import yaml
 from einops import rearrange
 from hyper_attn.hyper_attn import HyperAttention
 from vanilla import MultiHeadAttention
+from causal_masker import CausalSelfAttention
 # from vanilla_attn import vanilla_attention
 
 def setup_config():
@@ -44,13 +45,13 @@ def run_experiment(data, causal, config):
     init_state = model.initial_state(model_config)
     block_len = config['block_len']
     sequence_len = config['sequence_len']
+    x = data
     data = rearrange(data, 'b (l s) d -> l b s d', l=sequence_len//block_len, s=block_len)
-    print(data.shape)   
     q,k, v, _  = model.compute_k_q_v_g(data)
-    print(q.shape, k.shape, v.shape)    
     vq_output_dict_k, vq_output_dict_q  = model.run_vqk(present_k=k, present_q=q, loss_mask=torch.Tensor([1]), return_vecs_hat=False)
     present_z_k = vq_output_dict_k["shortcodes"]
     present_z_q = vq_output_dict_q["shortcodes"]
+    del vq_output_dict_k, vq_output_dict_q
     empty_cache(config)
     ###### VQ Runtime
     with torch.inference_mode():
@@ -64,19 +65,16 @@ def run_experiment(data, causal, config):
     vq_time = end_time - start_time
     print(f'VQ time: {vq_time}')
     ###### Hyper Attention Runtime
+    del present_z_k, present_z_q
+    del model
+    torch.cuda.empty_cache()
     q = rearrange(q, 't b h s d -> b (t s) h  d')
     k = rearrange(k, 't b h s d -> b (t s) h  d')
     v = rearrange(v, 't b h s d -> b (t s) h  d')
     
-    hyper_attn = compile_hyper_attn(q.shape[-1], d_model)    
-    # with torch.inference_mode():
-    #     start_time = time.time()
-    #     hyper_attn(q, k, v, causal=causal)
-    #     end_time = time.time()
-
     
-    # hyper_attn_time = end_time - start_time
-    # print(f'Hyper Attention time: {hyper_attn_time}')
+    hyper_attn_time = end_time - start_time
+    print(f'Hyper Attention time: {hyper_attn_time}')
     hyper_attn_time = 0
     
     vanilla_attention_model = compile_vanilla_attn(config['d_model'], config['n_head'], config['device'])
@@ -86,18 +84,26 @@ def run_experiment(data, causal, config):
         end_time = time.time()
     vanilla_attn_time = end_time - start_time
     print(f'Vanilla Attention time: {vanilla_attn_time}')
+    del q, k, v, data, vanilla_attention_model
+    torch.cuda.empty_cache()
+    with torch.inference_mode():
+        causal_attn = CausalSelfAttention(d_model, config['n_head'], 0.0, 0.0, x.shape[-2]).to(device=config['device'])
+        start_time = time.time()
+        causal_attn(x)
+        end_time = time.time()
+    print(f'Causal Attention time: {end_time - start_time}')
 
     return vq_time, hyper_attn_time, vanilla_attn_time
 
 def compile_hyper_attn(dim, device):
     #(batch_size, head_size, seq_len, dim)
-    block_size = 256
-    sample_size = 256
+    block_size = 512
+    sample_size = 512
     attn = HyperAttention(
         input_dim=dim, 
         block_size=block_size,
         sample_size=sample_size,
-        min_seq_len=512,
+        min_seq_len=1024,
         cuda=device)
     return attn
 
@@ -105,6 +111,7 @@ def compile_vanilla_attn(n_dim , n_heads, device ):
     # shape(batch, sequence_length, num_heads, hidden_size)
     model = MultiHeadAttention(n_dim, n_heads, 0.0).to(device)
     return model
+
 
 def main():
     sequence_lengths = [1024 * 2**i for i in range(0,9)]

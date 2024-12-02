@@ -7,7 +7,7 @@ block_len: 32
 mem_len: 128
 grad_thru_cache: False
 agg_cache: True
-d_model: 1024
+d_model: 512
 d_k: 128
 d_v: 128
 d_ff: 128

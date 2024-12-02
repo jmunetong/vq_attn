@@ -1,8 +1,8 @@
 import math
 import torch
 from einops import rearrange
-# from .utils import exact_attention, exact_attention_cuda, add_self_attentions, indexing
-from .utils import add_self_attentions, indexing
+
+from .utils import exact_attention, exact_attention_cuda, add_self_attentions, indexing
 from .angular_lsh import AngularLSH
 
 
@@ -34,12 +34,12 @@ class HyperAttention(torch.nn.Module):
 
         # With causal masking
         else:
-            # if n_key <= self.min_seq_len:
-            #     # if self.cuda:
-            #     #     attn, lse = exact_attention_cuda(query, key, value, scale, causal=True)
-            #     # else:
-            #     attn, lse = exact_attention(query, key, value, scale, causal=True)
-            # else:
+            if n_key <= self.min_seq_len:
+                if self.cuda:
+                    attn, lse = exact_attention_cuda(query, key, value, scale, causal=True)
+                else:
+                    attn, lse = exact_attention(query, key, value, scale, causal=True)
+            else:
             
                 # If n_query is odd we pad inputs by adding all-zero rows
                 if n_query % 2:

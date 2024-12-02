@@ -1,11 +1,12 @@
 import math
 import torch
-# try:
-#     from flash_attn import flash_attn_func as flash_attn_func_cuda
-# except ImportError:
-#     flash_attn_func_cuda = None
+try:
+    from flash_attn import flash_attn_func as flash_attn_func_cuda
+except ImportError:
+    flash_attn_func_cuda = None
 
-# from .flash_attn_triton_for_hyper import flash_attn_func
+from .flash_attn_triton_for_hyper import flash_attn_func
+
 
 def indexing(x, indices, chunk_size=-1):
     """ 
@@ -53,33 +54,33 @@ def add_self_attentions(attn1, lse1, attn2, lse2):
     return attn, lse
 
 
-# def exact_attention(query, key, value, softmax_scale, causal=False, bias=None):
-#     if query.dtype not in [torch.bfloat16, torch.float16]:
-#         qk = query @ key.transpose(-1,-2) * softmax_scale
-#         if causal:
-#             qk += (torch.ones(query.shape[2], key.shape[2], device=query.device) * torch.finfo(query.dtype).min).triu(1).reshape(1,1,query.shape[2], key.shape[2])
-#         out = qk.softmax(dim=-1) @ value
-#         lse = torch.logsumexp(qk, dim=-1, keepdim=True)
-#         return out, lse
+def exact_attention(query, key, value, softmax_scale, causal=False, bias=None):
+    if query.dtype not in [torch.bfloat16, torch.float16]:
+        qk = query @ key.transpose(-1,-2) * softmax_scale
+        if causal:
+            qk += (torch.ones(query.shape[2], key.shape[2], device=query.device) * torch.finfo(query.dtype).min).triu(1).reshape(1,1,query.shape[2], key.shape[2])
+        out = qk.softmax(dim=-1) @ value
+        lse = torch.logsumexp(qk, dim=-1, keepdim=True)
+        return out, lse
 
-#     out, lse = flash_attn_func(
-#         query.transpose(1,2), key.transpose(1,2), value.transpose(1,2),
-#         bias, causal, softmax_scale)
-#     out = out.transpose(1,2)
+    out, lse = flash_attn_func(
+        query.transpose(1,2), key.transpose(1,2), value.transpose(1,2),
+        bias, causal, softmax_scale)
+    out = out.transpose(1,2)
     
-#     lse = lse.detach()
-#     if lse.shape[2] != out.shape[2]:
-#         lse = lse[:,:,:out.shape[2]]
-#     lse = lse.unsqueeze(-1)
-#     return out, lse
+    lse = lse.detach()
+    if lse.shape[2] != out.shape[2]:
+        lse = lse[:,:,:out.shape[2]]
+    lse = lse.unsqueeze(-1)
+    return out, lse
     
 
-# def exact_attention_cuda(query, key, value, softmax_scale, causal, bias=None):
-#     if flash_attn_func_cuda is None:
-#         raise ImportError("Please install flash_attn (pip install flash-attn --no-build-isolation)")
-#     out, lse, _ = flash_attn_func_cuda(
-#         query.transpose(1,2), key.transpose(1,2), value.transpose(1,2),
-#         softmax_scale=softmax_scale, causal=causal, return_attn_probs=True)
-#     out = out.transpose(1,2)
-#     lse = lse.unsqueeze(-1)
-#     return out, lse
+def exact_attention_cuda(query, key, value, softmax_scale, causal, bias=None):
+    if flash_attn_func_cuda is None:
+        raise ImportError("Please install flash_attn (pip install flash-attn --no-build-isolation)")
+    out, lse, _ = flash_attn_func_cuda(
+        query.transpose(1,2), key.transpose(1,2), value.transpose(1,2),
+        softmax_scale=softmax_scale, causal=causal, return_attn_probs=True)
+    out = out.transpose(1,2)
+    lse = lse.unsqueeze(-1)
+    return out, lse
