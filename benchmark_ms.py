@@ -20,6 +20,7 @@ from matplotlib import pyplot as plt
     ))
 def benchmark(sequence_len, provider):
     config = setup_config()
+    print(f'Sequence length {sequence_len}')
     config['sequence_len'] = sequence_len
     data = build_data(config)
     empty_cache(config)
