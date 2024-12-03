@@ -1,6 +1,6 @@
 param_dtype: 'float32'
 dtype: 'float32'
-global_batch_size: 2
+global_batch_size: 1
 sequence_len: 1024
 update_len: 64
 block_len: 32
@@ -12,7 +12,6 @@ d_k: 128
 d_v: 128
 d_ff: 128
 n_head: 1
-
 n_layer: 4
 n_vocab: 2048
 pe_abs: False
@@ -29,9 +28,9 @@ e_preln: 1
 e_scale: 0.005
 is_train: False
 no_emb: False
-n_code: 256
-n_code_k: 256
-n_code_q: 256
+n_code: 512
+n_code_k: 512
+n_code_q: 512
 device: 'gpu'
 n_device: 1
 n_block_per_update: 1

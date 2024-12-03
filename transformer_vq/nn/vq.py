@@ -178,7 +178,7 @@ class LearnableVQ(nn.Module):
             vecs_hat = sg(cz) + st(vecs)
         else:
             vecs_hat = None
-        
+        self.training = False
         if self.training:
             loss_mask = loss_mask.unsqueeze(1)
             l_commit = torch.mean(torch.sum(loss_mask.unsqueeze(1) * errs2, dim=1)) ## TODO: CHECK THIS LOSSS

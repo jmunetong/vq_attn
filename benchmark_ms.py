@@ -8,12 +8,12 @@ from matplotlib import pyplot as plt
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=['sequence_len'],  # Argument names to use as an x-axis for the plot.
-        x_vals=[2**i for i in range(10, 17, 1)],  # Different possible values for `x_name`.
+        x_vals=[2**i for i in range(10, 19, 1)],  # Different possible values for `x_name`.
         x_log=True,  # x axis is logarithmic.
         line_arg='provider',  # Argument name whose value corresponds to a different line in the plot.
-        line_vals=['vq-causal', 'vq-non-causal', 'hyper-attn-causal', 'hyper-attn-non-causal' ],  # Possible values for `line_arg`.
-        line_names=['vq-causal', 'vq-non-causal', 'hyper-attn-causal', 'hyper-attn-non-causal'],  # Label name for the lines.
-        styles=[('blue', '-'), ('green', '-'), ('red', '-'), ('orange', '-')],  # Line styles.
+        line_vals=['vq-causal', 'vq-non-causal', 'hyper-attn-causal', 'hyper-attn-non-causal', 'vanilla-causal', 'vanilla-non-causal' ],  # Possible values for `line_arg`.
+        line_names=['vq-causal', 'vq-non-causal', 'hyper-attn-causal', 'hyper-attn-non-causal',  'vanilla-causal', 'vanilla-non-causal' ],  # Label name for the lines.
+        styles=[('blue', '-'), ('green', '-'), ('red', '-'), ('orange', '-'), ('purple', '-'), ('grey', '-')],  # Line styles.
         ylabel='m/s',  # Label name for the y-axis.
         plot_name='Runtime(ms)',  # Name for the plot. Used also as a file name for saving the plot.
         args={},  # Values for function arguments not in `x_names` and `y_name`.
@@ -45,7 +45,17 @@ def benchmark(sequence_len, provider):
         empty_cache(config)
         hyper_attn = compile_hyper_attn(q.shape[-1], config['device'], block_size=config['block_len'], sample_size=64)
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: run_hyper_attn(hyper_attn, q, k, v, causal=True), quantiles=quantiles)
+    if provider == 'vanilla-causal':
+        del model, init_state
+        empty_cache(config)
+        vanilla_causal_model = compile_vanilla_causal(config, config['d_model'], config['block_len'])
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: run_vanilla_attn_causal(q, k, v, vanilla_causal_model) , quantiles=quantiles)
+    if provider == 'vanilla-non-causal':
+        vanilla_attention_model = compile_vanilla_attn(config['d_model'], config['n_head'], config['device'])
+        del model, init_state
+        empty_cache(config)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: run_vanilla_attn_non_causal(q, k, v, vanilla_attention_model), quantiles=quantiles)
     return ms, max_ms, min_ms
 
 benchmark.run(show_plots=True, print_data=True)
-plt.savefig('benchmark.png')
+plt.savefig('benchmark_ms.png')

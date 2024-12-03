@@ -23,7 +23,6 @@ def build_data(config):
     n_vocab = config['n_vocab']
     sequence_length = config['sequence_len']
     d_model = config['d_model']
-    print(sequence_length)
     data = torch.randint(low=0, high=n_vocab, size=(config['global_batch_size'], sequence_length)).to(device=config['device'])
     emb = Emb(n_vocab, d_model).to(device=config['device'])
     data = emb(data)
@@ -70,6 +69,10 @@ def compile_vanilla_attn(n_dim , n_heads, device ):
     model = MultiHeadAttention(n_dim, n_heads, 0.0).to(device)
     return model
 
+def run_vanilla_attn_non_causal(q, k, v, vanilla_attention_model):
+    with torch.inference_mode():
+        for i in range(q.shape[0]):
+            vanilla_attention_model.attn(q[i], k[i], v[i])
 
 def run_vq_attn(model, present_z_k, present_z_q, v, init_state, causal=True):
     with torch.inference_mode():
@@ -78,3 +81,10 @@ def run_vq_attn(model, present_z_k, present_z_q, v, init_state, causal=True):
                         aggcache=init_state['aggcache'],
                         present_v=v,
                         causal=causal)
+def compile_vanilla_causal(config, d_model, block_len):
+    return CausalSelfAttention(d_model, config['n_head'], 0.0, 0.0, block_len).to(device=config['device'])
+
+def run_vanilla_attn_causal(q, k, v, causal_attn):
+    with torch.inference_mode():
+        for i in range(q.shape[0]):
+            causal_attn(q[i], k[i], v[i])
