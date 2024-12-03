@@ -1,6 +1,6 @@
 param_dtype: 'float32'
 dtype: 'float32'
-global_batch_size: 4
+global_batch_size: 2
 sequence_len: 1024
 update_len: 64
 block_len: 32

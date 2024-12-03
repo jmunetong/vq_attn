@@ -21,8 +21,6 @@ def attention(query, key, value, mask=None, dropout=None):
     scores = torch.matmul(query,key.transpose(-2,-1))/(math.sqrt(d_k)) # dot product b/w query,key
 
     if mask is not None:
-        print(mask.shape, "shape of mask")
-        print(scores.shape, "shape of scores")
         scores = scores.masked_fill(mask[:,:,:T,:T]==0,-1e10) # make future words unreachable -inf
     prob_attn = F.softmax(scores,dim=-1) # calculating probs
     if dropout is not None:
@@ -57,10 +55,13 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("mask",subsequent_mask) # to make sure it is stored in states dict while saving model
 
       
-    def forward(self, x, layer_past=None):
-        B,T,d_model = x.size()
-        query,key,value = [l(x).view(B,-1,self.n_head,self.d_k).transpose(1,2) for l,x in zip(self.linears,(x,x,x))]
+    def forward(self, query, key, value, layer_past=None):
+        # B,T,d_model = x.size()
+        # query,key,value = [l(x).view(B,-1,self.n_head,self.d_k).transpose(1,2) for l,x in zip(self.linears,(x,x,x))]
         #print(x.shape)
+        query = query.transpose(1,2)
+        key = key.transpose(1,2)
+        value = value.transpose(1,2)
         y = attention(query,key,value,mask=self.mask,dropout=self.attn_drop)
-        y = y.transpose(1,2).contiguous().view(B,T,d_model)
-        return self.resid_drop(self.linears[-1](y)) #pass through a linear and dropout
+        # y = y.transpose(1,2).contiguous().view(B,T,d_model)
+        # return self.resid_drop(self.linears[-1](y)) #pass through a linear and dropout
