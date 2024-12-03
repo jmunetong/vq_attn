@@ -137,7 +137,6 @@ def compile_vanilla_attn(n_dim , n_heads, device ):
     model = MultiHeadAttention(n_dim, n_heads, 0.0).to(device)
     return model
 
-
 def main():
     sequence_lengths = [1024 * 2**i for i in range(0,9)]
     causal = True

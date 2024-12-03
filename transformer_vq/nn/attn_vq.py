@@ -112,7 +112,6 @@ class VQAttentionQK(VQAttention):
                                                             causal=causal)
         if wv.dim() == 4:
             wv.unsqueeze(2)
-        print(f'wv shape: {wv.shape}')
         wv = rearrange(wv, 't b h s d -> t b s (h d)', h=self.n_head, s=self.block_len, d=self.d_v)   
         return wv, delta_k_present, delta_k_v_present
     

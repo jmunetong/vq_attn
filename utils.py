@@ -24,7 +24,7 @@ def build_data(config):
     sequence_length = config['sequence_len']
     d_model = config['d_model']
     print(sequence_length)
-    data = torch.randint(low=0, high=n_vocab, size=(4, sequence_length)).to(device=config['device'])
+    data = torch.randint(low=0, high=n_vocab, size=(config['global_batch_size'], sequence_length)).to(device=config['device'])
     emb = Emb(n_vocab, d_model).to(device=config['device'])
     data = emb(data)
     return data
@@ -36,8 +36,9 @@ def empty_cache(config):
         torch.cuda.empty_cache()
 
 def run_hyper_attn(hyper_attn, q, k, v, causal):
-    for i in range(q.shape[0]):
-        hyper_attn(q[i], k[i], v[i], causal=causal)
+    with torch.inference_mode():
+        for i in range(q.shape[0]):
+            hyper_attn(q[i], k[i], v[i], causal=causal)
 
 def build_test_pipeline(config, data):
     d_model = config['d_model'] 
@@ -56,17 +57,24 @@ def get_short_codes(model, q, k):
 
 
 def compile_hyper_attn(dim, device, block_size=512, sample_size=64):
-    #(batch_size, head_size, seq_len, dim)
     attn = HyperAttention(
         input_dim=dim, 
         block_size=block_size,
         sample_size=sample_size,
         min_seq_len=32,
         cuda=False).to(device=device)
-    
     return attn
 
 def compile_vanilla_attn(n_dim , n_heads, device ):
     # shape(batch, sequence_length, num_heads, hidden_size)
     model = MultiHeadAttention(n_dim, n_heads, 0.0).to(device)
     return model
+
+
+def run_vq_attn(model, present_z_k, present_z_q, v, init_state, causal=True):
+    with torch.inference_mode():
+        model.attn(present_z_k=present_z_k,
+                        present_z_q=present_z_q,
+                        aggcache=init_state['aggcache'],
+                        present_v=v,
+                        causal=causal)
