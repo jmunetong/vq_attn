@@ -1,25 +1,31 @@
-# Vector Quantization Attention
+# Efficient Self-Attention Mechanisms Via Vector Quantization
 
-A PyTorch implementation of efficient attention mechanisms using vector quantization techniques. This project explores and compares different attention mechanisms including VQ-Attention, HyperAttention, and standard multi-head attention.
+A PyTorch implementation of novel self-attention mechanisms using vector quantization (VQ-VAE) techniques to achieve sub-quadratic runtime complexity. This research project, developed from scratch, addresses the quadratic time and space complexity challenges of transformers in long-sequence processing tasks.
+
+## Abstract
+
+This project presents a novel self-attention mechanism that leverages Vector Quantized Variational Autoencoders (VQ-VAEs) to achieve efficient attention computation over long contexts. By compressing input representations of keys and queries through vector quantization, our approach enables sub-quadratic runtime complexity while maintaining performance stability. Experimental results demonstrate that the VQ-based attention mechanism outperforms vanilla attention and baseline models in throughput, memory efficiency, and computational performance across sequence lengths from 10³ to 10⁵ tokens.
 
 ## Overview
 
-This project implements and benchmarks several attention mechanisms:
+This project implements and benchmarks three attention mechanisms:
 
-- **VQ-Attention (VQAttentionQK)**: Uses vector quantization for both queries and keys to reduce computational complexity
-- **HyperAttention**: Efficient attention using Angular Locality Sensitive Hashing (LSH) 
-- **Vanilla Multi-Head Attention**: Standard transformer attention for comparison
+- **VQ-Attention (VQAttentionQK)**: Novel approach using vector quantization for both queries and keys, achieving sub-quadratic complexity through learned codebook representations
+- **HyperAttention**: Baseline efficient attention using Angular Locality Sensitive Hashing (LSH) with O(N log N) complexity
+- **Vanilla Multi-Head Attention**: Standard transformer attention with O(N²) complexity for comparison
 
-The implementation focuses on making attention mechanisms more efficient for long sequences while maintaining performance.
+The core innovation lies in using the associative property of matrix multiplication with quantized representations, enabling precomputation of softmax operations and reducing computational overhead.
 
-## Features
+## Key Features
 
-- Vector quantization-based attention with learnable codebooks
-- Angular LSH-based attention for approximate similarity search
-- Configurable attention parameters (heads, dimensions, sequence lengths)
-- Performance benchmarking across different sequence lengths
-- Support for both causal and non-causal attention
-- GPU acceleration with CUDA and MPS support
+- **Sub-quadratic Complexity**: Reduces attention complexity from O(N²) to O(N×K) where K << N through vector quantization
+- **Learnable Codebooks**: Dual codebook representations for queries and keys with learnable embeddings
+- **Precomputed Softmax**: Matrix M = exp(C_Q C_K^T) can be precomputed once, significantly reducing runtime overhead
+- **Scalable Performance**: Demonstrated 30x speedup over baseline methods for long sequences (up to 262K tokens)
+- **Memory Efficiency**: Achieves up to 3.5 GB/s memory throughput for long-sequence tasks
+- **Configurable Architecture**: Support for varying codebook sizes (256-8192 codevectors) with performance analysis
+- **Comprehensive Benchmarking**: Performance evaluation across sequence lengths from 1K to 256K tokens
+- **Both Attention Types**: Support for causal and non-causal attention mechanisms
 
 ## Installation
 
@@ -109,48 +115,101 @@ vq_attn/
 └── notebook.ipynb          # Interactive experiments
 ```
 
-## Benchmarking
+## Experimental Results
 
-The project includes comprehensive benchmarking across different sequence lengths:
+### Performance Benchmarks
 
-```python
-# Benchmark attention mechanisms
-sequence_lengths = [1024 * 2**i for i in range(0, 9)]  # 1K to 256K tokens
-python test.py
+Comprehensive evaluation across sequence lengths from 1,024 to 262,144 tokens:
+
+| Sequence Length | VQ-Causal | VQ-NonCausal | Hyper-Attn | Vanilla Attn |
+|----------------|-----------|--------------|-------------|--------------|
+| 1,024          | 0.58 ms   | 0.60 ms      | 12.58 ms    | 9.69 ms      |
+| 16,384         | 5.24 ms   | 3.95 ms      | 197.38 ms   | 151.78 ms    |
+| 65,536         | 19.76 ms  | 14.99 ms     | 794.92 ms   | 620.14 ms    |
+| 262,144        | 79.18 ms  | 59.30 ms     | 3203.77 ms  | 2494.38 ms   |
+
+**Key Findings:**
+- **~30x Speedup**: VQ-Attention consistently outperforms baseline methods
+- **Memory Efficiency**: Up to 3.5 GB/s throughput for VQ-NonCausal
+- **Scalability**: Performance advantage increases with sequence length
+
+### Codebook Size Analysis
+
+Performance varies significantly with codebook size (fixed at 16K sequence length):
+
+| Codebook Size | VQ-Causal | VQ-NonCausal | Optimal Range |
+|---------------|-----------|--------------|---------------|
+| 256           | 2.63 ms   | 1.87 ms      | ✓ Efficient   |
+| 1,024         | 12.11 ms  | 9.46 ms      | ✓ Balanced    |
+| 4,096         | 93.39 ms  | 83.78 ms     | ⚠ Diminishing |
+| 8,192         | 315.18 ms | 295.59 ms    | ✗ Inefficient |
+
+**Insight**: Careful codebook size selection is crucial - larger codebooks can underperform even hyperattention.
+
+## Methodology
+
+### Vector Quantization Approach
+
+Our method extends the work of Lingle (2024) by introducing vector quantization for both queries and keys (rather than keys only). The core innovation uses the associative property of matrix multiplication:
+
+```
+W = φ_w(QK^T + B) ≈ φ_w(VQ(Q; C_Q)VQ(K; C_K)^T)
+  = φ_w(Δ_Q C_Q C_K^T Δ_K^T)
+  = Diag(Δ_Q M Δ_K 1)^{-1} Δ_Q M Δ_K
 ```
 
-Performance is measured for:
-- VQ-Attention with quantized queries and keys  
-- HyperAttention with LSH-based approximation
-- Vanilla multi-head attention as baseline
+Where:
+- `C_Q, C_K ∈ R^{S×D}` are learnable codebook matrices for queries and keys
+- `M = exp(C_Q C_K^T)` is the precomputed softmax matrix
+- `Δ_Q, Δ_K` are sparse Kronecker delta matrices for code selection
+- `VQ(·; C)` denotes the vector quantization function
 
-## Key Components
+### Key Advantages
 
-### VQ-Attention
-- Quantizes queries and keys using learnable codebooks
-- Reduces attention complexity from O(n²) to O(n×k) where k << n
-- Maintains attention quality through learned vector quantization
+1. **Precomputation**: Matrix M can be computed once during training
+2. **Sparse Operations**: Main computation involves constructing sparse Δ matrices
+3. **Scalability**: Complexity depends on codebook size S rather than sequence length N
 
-### HyperAttention  
-- Uses Angular LSH for efficient similarity search
-- Samples and blocks tokens for approximate attention
-- Particularly effective for very long sequences
+### Training Loss
 
-### Configuration
-The `TransformerConfig` class manages all model parameters including:
-- Model dimensions (d_model, d_k, d_v)
-- Quantization settings (n_code, n_code_q, n_code_k)
-- Training hyperparameters (dropout rates, learning rates)
+The complete loss function combines prediction loss with VQ-VAE codebook losses:
+
+```
+L = L_pred + Σ_{i=1}^t (L_ct^{Q(i)} + L_ct^{K(i)})
+```
+
+Where codebook loss includes reconstruction, embedding, and commitment terms.
+
+## Limitations & Future Work
+
+### Current Limitations
+- Hardware constraints prevented full CUDA optimization evaluation
+- No integration with advanced tools like Triton for matrix optimization or Faiss for efficient codevector search
+- Lack of formal scaling laws for larger model prediction
+- Limited to inference-time optimization (training efficiency not evaluated)
+
+### Future Research Directions
+- Apply method to diverse domains to evaluate robustness
+- Investigate varying quantized query and key sizes
+- Develop formal scaling laws for production deployment
+- Integration with modern optimization frameworks (Triton, Faiss)
+- Training efficiency analysis and end-to-end performance evaluation
+
+## Acknowledgments
+
+This work was completed as part of CS229 at Stanford University. The algorithm was developed entirely from scratch by the authors.
 
 ## Citation
 
 If you use this work in your research, please cite:
 
 ```bibtex
-@misc{vq_attention,
-  title={Vector Quantization Attention},
-  author={Juan Muneton Gallego},
+@misc{ankeney2024efficient,
+  title={Efficient Self-Attention Mechanisms Via Vector Quantization},
+  author={George Ankeney and Juan Muneton Gallego},
   year={2024},
-  url={https://github.com/juanmuneton/vq_attn}
+  institution={Stanford University},
+  note={CS229 Final Project},
+  url={https://github.com/jmunetong/vq_attn}
 }
 ```
