@@ -199,6 +199,26 @@ Where codebook loss includes reconstruction, embedding, and commitment terms.
 - Integration with modern optimization frameworks (Triton, Faiss)
 - Training efficiency analysis and end-to-end performance evaluation
 
+## Related Projects
+
+### Selective Fine-Tuning via Robust Regularization for GPT-2
+
+![Selective Fine-Tuning](selective_finetuning_thumbnail.png)
+
+A complementary research project exploring parameter-efficient fine-tuning techniques for large language models. This Stanford CS224N project investigated methods to make GPT-2 fine-tuning more efficient and robust.
+
+**Key Results:**
+- 90.4% accuracy in paraphrase detection tasks
+- 42.553 CHRF score in sonnet generation
+- Spectrum analysis identified as most effective fine-tuning method
+- LoRA/QLoRA demonstrated significant model size reduction
+
+**Repository:** [selective_finetunning_gpt](https://github.com/jmunetong/selective_finetunning_gpt)
+
+**Authors:** Annie Fan, Mustafa Fadl, and Juan Muneton Gallego
+
+---
+
 ## Acknowledgments
 
 This work was completed as part of CS229 at Stanford University. The algorithm was developed entirely from scratch by the authors.
