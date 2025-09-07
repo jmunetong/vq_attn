@@ -158,6 +158,10 @@ W = φ_w(QK^T + B) ≈ φ_w(VQ(Q; C_Q)VQ(K; C_K)^T)
   = Diag(Δ_Q M Δ_K 1)^{-1} Δ_Q M Δ_K
 ```
 
+![VQ-Attention Computation](vq_attn.png)
+
+*The VQ-Attention computational structure showing matrix factorization: Δ_Q (T×N_Q) × φ_w(C_Q C_K^T) (N_Q×N_K) × Δ_K V (N_K×D_v), enabling sub-quadratic complexity through precomputed softmax operations.*
+
 Where:
 - `C_Q, C_K ∈ R^{S×D}` are learnable codebook matrices for queries and keys
 - `M = exp(C_Q C_K^T)` is the precomputed softmax matrix
